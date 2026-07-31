@@ -11,4 +11,7 @@ urlpatterns = [
     # API endpoints
     path("api/auth/", include("accounts.urls")),
     path("api/hierarchy/", include("hierarchy.urls")),
+    path("api/venues/", include("venues.urls")),
+    path("api/courses/", include("courses.urls")),
+    path("api/scheduling/", include("scheduling.urls")),
 ]
