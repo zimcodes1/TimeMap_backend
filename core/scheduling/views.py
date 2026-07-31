@@ -58,6 +58,26 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user.admin_profile)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+
+        pending_discrepancy = serializer.context.get("pending_discrepancy")
+        if pending_discrepancy:
+            return Response(
+                {
+                    "outcome": "ROUTE_APPROVAL",
+                    "message": "Booking touches a venue outside your scope and has been routed for approval.",
+                    "discrepancy_request_id": pending_discrepancy.id,
+                    "routed_to_admin_id": pending_discrepancy.routed_to_id,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
     @extend_schema(summary="Trigger recurrence materialization into LectureSessions", responses={200: LectureSessionSerializer(many=True)})
     @action(detail=True, methods=["post"])
     def materialize(self, request, pk=None):

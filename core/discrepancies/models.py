@@ -10,13 +10,16 @@ class DiscrepancyRequest(models.Model):
         SHIFT_TIME = "shift_time", "Shift Time"
         POSTPONE = "postpone", "Postpone"
         CANCEL = "cancel", "Cancel"
+        CREATE_BOOKING = "create_booking", "Create Booking"
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
 
-    timetable_entry = models.ForeignKey(TimetableEntry, on_delete=models.CASCADE, related_name="discrepancy_requests")
+    timetable_entry = models.ForeignKey(
+        TimetableEntry, null=True, blank=True, on_delete=models.CASCADE, related_name="discrepancy_requests"
+    )
     request_type = models.CharField(max_length=30, choices=RequestType.choices)
     proposed_venue = models.ForeignKey(
         Venue, null=True, blank=True, on_delete=models.SET_NULL, related_name="proposed_discrepancies"

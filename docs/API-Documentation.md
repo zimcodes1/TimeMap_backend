@@ -1,0 +1,448 @@
+# Timetable, Venue & Discrepancy Management System
+## Exhaustive Backend API Documentation (Weeks 1–3)
+
+This document provides a comprehensive, exhaustive technical reference for all API endpoints, data models, authentication mechanisms, scoped permission rules, and the Conflict Detection Engine implemented in the backend.
+
+---
+
+## 1. Global Architecture & Standards
+
+### 1.1 Server & Base URL
+* **Development Server**: `http://localhost:8000`
+* **API Base Path**: `/api/`
+* **Content Type**: `application/json` (All request and response bodies are JSON formatted)
+
+### 1.2 Authentication Scheme
+The API uses **JSON Web Token (JWT)** Bearer Authentication (issued via `djangorestframework-simplejwt`).
+* **Header Format**: `Authorization: Bearer <access_token>`
+* **Access Token Lifetime**: 1 hour
+* **Refresh Token Lifetime**: 7 days
+
+### 1.3 First-Login Forced Password Reset
+Newly seeded accounts are created with `requires_password_reset = true`.
+* **Enforcement Rule**: Any request to a protected endpoint (guarded by `IsPasswordResetDone`) will be rejected with **`403 Forbidden`** until the user calls `/api/auth/password-reset/` to set a new password.
+
+### 1.4 Hierarchical Scope Resolution
+Access and querysets are scoped at the database level according to the requesting `AdminOfficer`'s level:
+* **Department Admin**: Scoped strictly to their assigned department (`scope_department`).
+* **Faculty Admin**: Scoped to their faculty (`scope_faculty`) and **all departments under that faculty** (downward resolution).
+* **School Admin**: Scoped to their school (`scope_school`) and **all faculties/departments under that school**.
+* **Student / Lecturer**: Scoped to their home department and public schedule information.
+
+---
+
+## 2. Conflict Detection Engine & Routing
+
+The Conflict Detection Engine (`scheduling/conflict_engine.py`) evaluates every proposed timetable entry or exam sitting before it is saved.
+
+### 2.1 Four Core Checks
+1. **Interval Overlap Comparison**: Standard interval check (`start1 < end2 AND end1 > start2`). Boundary adjacent slots (e.g., 10:00–11:00 and 11:00–12:00) do **not** clash.
+2. **Venue Overlap Detection**: Evaluates proposed room, date, and times against materialized `LectureSession` instances and one-off `TimetableEntry` / `ExamSitting` entries. For recurring entries, it projects and validates **every single occurrence date** across the term.
+3. **Student Exam Clash Detection**: Checks if any student registered for a course (via `CourseRegistration`) has another exam sitting at an overlapping time on the same date.
+4. **Lecturer Double-Booking Detection**: Checks if assigned teaching staff or exam invigilators have overlapping teaching sessions or invigilation duties on the same date.
+
+### 2.2 Three Routing Outcomes
+When a booking attempt is submitted to `POST /api/scheduling/entries/`:
+
+| Outcome | Trigger Condition | HTTP Status | Response Content |
+|---|---|---|---|
+| **`PROCEED`** | Requester has scope authority over venue **AND** no conflicts exist. | `201 Created` | Created `TimetableEntry` JSON object (auto-materializes sessions if recurring lecture). |
+| **`HARD_REJECT`** | Requester has scope authority **BUT** conflicts exist. | `400 Bad Request` | Structured JSON containing `detail` message and `conflicts` array detailing clashing entries, times, and affected users. |
+| **`ROUTE_APPROVAL`** | Request touches a venue **outside** the requester's scope (e.g. Dept admin booking a Faculty venue). | `202 Accepted` | Pending status JSON containing `outcome: "ROUTE_APPROVAL"`, `discrepancy_request_id`, and `routed_to_admin_id`. |
+
+---
+
+## 3. Authentication Endpoints (`/api/auth/`)
+
+### 3.1 User Login
+Authenticates a student, lecturer, or admin using their unique identifier.
+
+* **URL**: `/api/auth/login/`
+* **Method**: `POST`
+* **Auth Required**: No (Public)
+* **Headers**: `Content-Type: application/json`
+
+#### Request Body
+```json
+{
+  "identifier": "NSUK/CSC/2021/001",
+  "password": "Pass#0100"
+}
+```
+
+#### Success Response (`200 OK`)
+```json
+{
+  "user": {
+    "id": 1,
+    "identifier": "NSUK/CSC/2021/001",
+    "role": "student",
+    "requires_password_reset": true,
+    "is_active": true,
+    "last_login_at": "2026-07-31T05:40:00Z",
+    "created_at": "2026-07-31T04:20:00Z"
+  },
+  "tokens": {
+    "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  },
+  "requires_password_reset": true,
+  "profile": {
+    "id": 1,
+    "matric_number": "NSUK/CSC/2021/001",
+    "full_name": "Alice Smith",
+    "department": 1,
+    "level": 300,
+    "is_class_rep": true,
+    "email": "alice@example.com"
+  }
+}
+```
+
+---
+
+### 3.2 Forced First-Login Password Reset
+Updates the user's password and clears the `requires_password_reset` flag.
+
+* **URL**: `/api/auth/password-reset/`
+* **Method**: `POST`
+* **Auth Required**: Yes (`Authorization: Bearer <access_token>`)
+* **Headers**:
+  * `Authorization: Bearer <access_token>`
+  * `Content-Type: application/json`
+
+#### Request Body
+```json
+{
+  "new_password": "MyNewSecurePassword123"
+}
+```
+
+#### Success Response (`200 OK`)
+```json
+{
+  "detail": "Password has been successfully updated. You may now access the application."
+}
+```
+
+---
+
+### 3.3 JWT Refresh Token
+Obtains a new access token using a valid refresh token.
+
+* **URL**: `/api/auth/token/refresh/`
+* **Method**: `POST`
+* **Auth Required**: No
+* **Headers**: `Content-Type: application/json`
+
+#### Request Body
+```json
+{
+  "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+#### Success Response (`200 OK`)
+```json
+{
+  "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+---
+
+### 3.4 Get Current User Profile
+Retrieves user profile and role details.
+
+* **URL**: `/api/auth/profile/`
+* **Method**: `GET`
+* **Auth Required**: Yes (`Authorization: Bearer <access_token>`)
+
+#### Success Response (`200 OK`)
+```json
+{
+  "user": {
+    "id": 1,
+    "identifier": "NSUK/CSC/2021/001",
+    "role": "student",
+    "requires_password_reset": false,
+    "is_active": true
+  },
+  "profile": {
+    "id": 1,
+    "matric_number": "NSUK/CSC/2021/001",
+    "full_name": "Alice Smith",
+    "department": 1,
+    "level": 300,
+    "is_class_rep": true,
+    "email": "alice@example.com"
+  }
+}
+```
+
+---
+
+### 3.5 Student / Lecturer / Admin User List & Detail
+Scoped profile management endpoints.
+
+* **URLs**:
+  * `/api/auth/students/`
+  * `/api/auth/lecturers/`
+  * `/api/auth/admins/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+* **Auth Required**: Yes (`Authorization: Bearer <access_token>`)
+
+---
+
+## 4. Organizational Hierarchy Endpoints (`/api/hierarchy/`)
+
+### 4.1 Schools
+* **URL**: `/api/hierarchy/schools/`
+* **Methods**: `GET` (All users), `POST`, `PUT`, `PATCH`, `DELETE` (Admin only)
+* **Auth Required**: Yes
+
+#### Request Body (`POST / PUT`)
+```json
+{
+  "name": "Nasarawa State University",
+  "code": "NSUK"
+}
+```
+
+---
+
+### 4.2 Faculties
+* **URL**: `/api/hierarchy/faculties/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST / PUT`)
+```json
+{
+  "school": 1,
+  "name": "Faculty of Natural & Applied Sciences",
+  "code": "FNS"
+}
+```
+
+---
+
+### 4.3 Departments
+* **URL**: `/api/hierarchy/departments/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST / PUT`)
+```json
+{
+  "faculty": 1,
+  "name": "Computer Science",
+  "code": "CSC"
+}
+```
+
+---
+
+## 5. Venue Registry Endpoints (`/api/venues/`)
+
+### 5.1 Facilities
+* **URL**: `/api/venues/facilities/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST`)
+```json
+{
+  "name": "HD Projector"
+}
+```
+
+---
+
+### 5.2 Venues
+* **URL**: `/api/venues/venues/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST / PUT`)
+```json
+{
+  "name": "Lecture Theatre 1",
+  "venue_type": "lecture_hall", // "lecture_hall", "laboratory", "exam_hall", "multipurpose"
+  "capacity": 150,
+  "exam_capacity": 80,
+  "facilities": [1, 2],
+  "owning_level": "department", // "department", "faculty", "school"
+  "owning_department": 1
+}
+```
+
+#### Custom Actions:
+* **Deactivate Venue**: `POST /api/venues/venues/{id}/deactivate/`
+* **Activate Venue**: `POST /api/venues/venues/{id}/activate/`
+
+---
+
+## 6. Academic Structure & Sharing Endpoints (`/api/courses/`)
+
+### 6.1 Courses
+* **URL**: `/api/courses/courses/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST / PUT`)
+```json
+{
+  "code": "CSC301",
+  "title": "Data Structures & Algorithms",
+  "level": 300,
+  "owning_level": "department", // "department", "faculty", "school", "general"
+  "owning_department": 1,
+  "lecturers": [1]
+}
+```
+
+#### Student Visible Course List:
+* **URL**: `GET /api/courses/courses/visible-to-me/`
+* **Description**: Returns all courses visible to the authenticated student based on default hierarchy rules plus approved course access grants.
+
+---
+
+### 6.2 Course Access Grants (Sharing Workflow)
+Allows sharing courses across departments or faculties.
+
+* **URL**: `/api/courses/grants/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST`)
+```json
+{
+  "course": 1,
+  "granted_to_level": "department",
+  "granted_to_department": 2,
+  "direction": "offered" // "offered" or "requested"
+}
+```
+
+#### Custom Actions (Admin Approval):
+* **Approve Grant**: `POST /api/courses/grants/{id}/approve/`
+* **Reject Grant**: `POST /api/courses/grants/{id}/reject/`
+
+---
+
+### 6.3 Course Registrations
+Registers students to courses for an academic session.
+
+* **URL**: `/api/courses/registrations/`
+* **Methods**: `GET`, `POST`, `DELETE`
+
+#### Request Body (`POST`)
+```json
+{
+  "course": 1,
+  "academic_session": "2025/2026"
+}
+```
+
+---
+
+## 7. Scheduling & Conflict Detection Endpoints (`/api/scheduling/`)
+
+### 7.1 Timetable Entries
+Creates lectures, exams, or events. Automatically triggers Conflict Detection & Hierarchical Routing.
+
+* **URL**: `/api/scheduling/entries/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST / PUT`)
+```json
+{
+  "entry_type": "lecture", // "lecture", "exam", "event"
+  "title": "CSC301 Weekly Lecture",
+  "course": 1,
+  "venue": 1,
+  "start_time": "09:00:00",
+  "end_time": "11:00:00",
+  "recurrence_rule": "weekly:tuesday",
+  "recurrence_start_date": "2026-08-01",
+  "recurrence_end_date": "2026-08-31",
+  "academic_session": "2025/2026"
+}
+```
+
+#### Response Cases:
+1. **`201 Created` (PROCEED)**: Live entry created; recurring lectures automatically materialized into dated `LectureSession` rows.
+2. **`400 Bad Request` (HARD_REJECT)**:
+```json
+{
+  "detail": "Booking clashes with 1 existing schedule entry/duty.",
+  "conflicts": [
+    {
+      "type": "venue_clash",
+      "venue_id": 1,
+      "venue_name": "Lecture Theatre 1",
+      "date": "2026-08-18",
+      "start_time": "09:00:00",
+      "end_time": "11:00:00",
+      "conflicting_title": "Existing Lecture",
+      "conflicting_session_id": 5
+    }
+  ]
+}
+```
+3. **`202 Accepted` (ROUTE_APPROVAL)**:
+```json
+{
+  "outcome": "ROUTE_APPROVAL",
+  "message": "Booking touches a venue outside your scope and has been routed for approval.",
+  "discrepancy_request_id": 12,
+  "routed_to_admin_id": 3
+}
+```
+
+#### Custom Actions:
+* **Manual Materialization**: `POST /api/scheduling/entries/{id}/materialize/`
+
+---
+
+### 7.2 Lecture Sessions (Materialized Dated Instances)
+Provides read and per-instance update access (for one-off date/time/room shifts).
+
+* **URL**: `/api/scheduling/sessions/`
+* **Methods**: `GET`, `PUT`, `PATCH`
+
+#### Response Object
+```json
+{
+  "id": 5,
+  "timetable_entry": 1,
+  "timetable_entry_title": "CSC301 Weekly Lecture",
+  "course_code": "CSC301",
+  "session_date": "2026-08-18",
+  "session_start_time": "09:00:00",
+  "session_end_time": "11:00:00",
+  "venue": 1,
+  "venue_name": "Lecture Theatre 1",
+  "status": "scheduled" // "scheduled", "shifted", "postponed", "cancelled", "held", "not_held"
+}
+```
+
+---
+
+### 7.3 Exam Sittings
+Extends a `TimetableEntry` with invigilator assignments and auto-calculated candidate counts.
+
+* **URL**: `/api/scheduling/exam-sittings/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST`)
+```json
+{
+  "timetable_entry": 2,
+  "invigilators": [1, 2]
+}
+```
+*(If `registered_candidates_count` is omitted, it is automatically calculated from live student `CourseRegistration` records).*
+
+---
+
+## 8. Interactive Documentation & Schema
+
+* **Swagger UI**: `http://localhost:8000/api/docs/swagger/`
+* **ReDoc UI**: `http://localhost:8000/api/docs/redoc/`
+* **OpenAPI 3.0 Schema (JSON)**: `http://localhost:8000/api/schema/`
