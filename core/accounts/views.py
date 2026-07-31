@@ -1,0 +1,129 @@
+from django.utils import timezone
+from drf_spectacular.utils import extend_schema
+from rest_framework import status, viewsets
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .models import AdminOfficer, LecturerStaff, Student, User
+from .permissions import IsAdminUserRole, IsPasswordResetDone, get_user_scope_departments
+from .serializers import (
+    AdminProfileSerializer,
+    LecturerProfileSerializer,
+    LoginSerializer,
+    PasswordResetSerializer,
+    StudentProfileSerializer,
+    UserSerializer,
+)
+
+
+class LoginView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = LoginSerializer
+
+    @extend_schema(
+        request=LoginSerializer,
+        summary="Authenticate User & Obtain Tokens",
+        description="Authenticates a user via Matric Number or Staff ID and returns JWT tokens along with role and profile info.",
+    )
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.validated_data["user"]
+            user.last_login_at = timezone.now()
+            user.save(update_fields=["last_login_at"])
+
+            return Response(
+                {
+                    "user": UserSerializer(user).data,
+                    "tokens": serializer.validated_data["tokens"],
+                    "requires_password_reset": serializer.validated_data["requires_password_reset"],
+                    "profile": serializer.validated_data["profile"],
+                },
+                status=status.HTTP_200_OK,
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PasswordResetView(APIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = PasswordResetSerializer
+
+    @extend_schema(
+        request=PasswordResetSerializer,
+        summary="Forced First-Login Password Reset",
+        description="Resets the password for the logged-in user and clears the requires_password_reset flag.",
+    )
+    def post(self, request):
+        serializer = PasswordResetSerializer(data=request.data)
+        if serializer.is_valid():
+            user = request.user
+            user.set_password(serializer.validated_data["new_password"])
+            user.requires_password_reset = False
+            user.save(update_fields=["password", "requires_password_reset"])
+            return Response(
+                {"detail": "Password has been successfully updated. You may now access the application."},
+                status=status.HTTP_200_OK,
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UserProfileView(APIView):
+    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+
+    @extend_schema(
+        summary="Get Current User Profile",
+        description="Retrieves identity and profile details for the currently authenticated user.",
+    )
+    def get(self, request):
+        user = request.user
+        profile_data = None
+        if user.role == "student" and hasattr(user, "student_profile"):
+            profile_data = StudentProfileSerializer(user.student_profile).data
+        elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
+            profile_data = LecturerProfileSerializer(user.lecturer_profile).data
+        elif user.role == "admin" and hasattr(user, "admin_profile"):
+            profile_data = AdminProfileSerializer(user.admin_profile).data
+
+        return Response(
+            {
+                "user": UserSerializer(user).data,
+                "profile": profile_data,
+            }
+        )
+
+
+class StudentViewSet(viewsets.ModelViewSet):
+    serializer_class = StudentProfileSerializer
+    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+
+    def get_queryset(self):
+        dept_qs = get_user_scope_departments(self.request.user)
+        return Student.objects.filter(department__in=dept_qs)
+
+
+class LecturerViewSet(viewsets.ModelViewSet):
+    serializer_class = LecturerProfileSerializer
+    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+
+    def get_queryset(self):
+        dept_qs = get_user_scope_departments(self.request.user)
+        return LecturerStaff.objects.filter(department__in=dept_qs)
+
+
+class AdminOfficerViewSet(viewsets.ModelViewSet):
+    serializer_class = AdminProfileSerializer
+    permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole]
+
+    def get_queryset(self):
+        dept_qs = get_user_scope_departments(self.request.user)
+        user = self.request.user
+        if hasattr(user, "admin_profile"):
+            if user.admin_profile.level == "school":
+                return AdminOfficer.objects.all() 
+            elif user.admin_profile.level == "faculty":
+                return AdminOfficer.objects.filter(
+                    models.Q(scope_faculty=user.admin_profile.scope_faculty)
+                    | models.Q(scope_department__in=dept_qs)
+                )
+        return AdminOfficer.objects.filter(scope_department__in=dept_qs)

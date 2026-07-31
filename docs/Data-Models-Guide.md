@@ -7,38 +7,19 @@ Field types are described conceptually (text, integer, boolean, date/time, refer
 
 ---
 
-## 0. Multi-Tenancy
-
-The system is built to be deployable across multiple institutions without modification — each institution's data (hierarchy, venues, courses, users) is fully isolated from every other institution's, and every admin, student, and lecturer belongs to exactly one institution. This isn't a separate module bolted on top; it's the top of the organizational hierarchy itself.
-
-**The practical consequence for every model below:** any field described elsewhere as "unique" (department codes, course codes, venue names) is unique *within its institution*, never globally across the platform. Two different institutions can both have a Computer Science department coded `CSC` without conflict — the same way two different companies can both have an employee named "John Smith" in an HR system. Uniqueness constraints are always scoped to `institution` first.
-
-Codes themselves are not pre-sourced or seeded from an external document — an institution's admin officer creates their own school/faculty/department/course records through the platform and sets the abbreviation directly, with the system validating uniqueness within their institution in real time and surfacing a conflict immediately if one exists. This keeps onboarding self-service for any new institution, rather than requiring a bespoke data-import exercise per tenant.
-
-### 0.1 `Institution`
-
-| Field | Type | Constraints | Description |
-|---|---|---|---|
-| `id` | Integer (PK) | Auto | Primary key |
-| `name` | Text | Unique, required | Full institution name |
-| `short_code` | Text | Unique, required | Platform-wide unique short identifier (e.g. "NSUK") — this one field is intentionally globally unique, since it's what distinguishes tenants from each other in the first place |
-| `is_active` | Boolean | Default: true | Allows suspending a tenant without deleting their data |
-| `created_at` | DateTime | Auto-set | |
-
----
-
 ## 1. Organizational Hierarchy
 
-These models represent a single institution's internal structure. Nothing else in the system can be correctly scoped without them existing first, and every one of them traces back to exactly one `Institution`.
+This is a single-institution system, built for this school's own use — there's no multi-tenant layer, and `School` sits at the top of the hierarchy. Nothing else in the system can be correctly scoped without these three models existing first.
+
+Codes (`code` fields below) are not pre-sourced or seeded from an external document — an admin officer creates school/faculty/department/course records through the platform and sets the abbreviation directly, with the system validating uniqueness in real time and surfacing a conflict immediately if one exists. This is a small but deliberate choice: the system doesn't need to parse or decompose matric numbers to extract a department code from them, so there's no structural reason to source codes from an external convention document — letting the officer in charge manage it directly, with the system catching conflicts, is simpler and correct.
 
 ### 1.1 `School`
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
-| `institution` | Reference → Institution | Required | The tenant this school belongs to |
-| `name` | Text | Unique within institution | Full school name |
-| `code` | Text | Unique within institution | Short identifier used in dropdowns and references |
+| `name` | Text | Unique, required | Full school name |
+| `code` | Text | Unique, required | Short identifier used in dropdowns and references |
 | `created_at` | DateTime | Auto-set | Record creation timestamp |
 
 ### 1.2 `Faculty`
@@ -46,10 +27,9 @@ These models represent a single institution's internal structure. Nothing else i
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
-| `institution` | Reference → Institution | Required | Denormalized from `school.institution` for direct query filtering — see note below |
 | `school` | Reference → School | Required | The school this faculty belongs to |
 | `name` | Text | Required | Full faculty name |
-| `code` | Text | Unique within institution | Short identifier |
+| `code` | Text | Unique, required | Short identifier |
 | `created_at` | DateTime | Auto-set | Record creation timestamp |
 
 ### 1.3 `Department`
@@ -57,15 +37,12 @@ These models represent a single institution's internal structure. Nothing else i
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
-| `institution` | Reference → Institution | Required | Denormalized from `faculty.institution` |
 | `faculty` | Reference → Faculty | Required | The faculty this department belongs to |
 | `name` | Text | Required | Full department name |
-| `code` | Text | Unique within institution | Short identifier |
+| `code` | Text | Unique, required | Short identifier |
 | `created_at` | DateTime | Auto-set | Record creation timestamp |
 
-**Why `code` is unique within the institution, not just the immediate parent:** department codes do double duty inside course codes (e.g. `CSC301`), which are referenced standalone without a faculty qualifier attached. If two faculties in the same institution could both have a `CSC` department, `CSC301` would be ambiguous about which one it belongs to. School and faculty codes carry lower risk of this kind of standalone reuse, but for consistency and simplicity, uniqueness is enforced at the institution level across all three.
-
-**Why `institution` is denormalized onto `Faculty` and `Department` instead of only living on `School`:** every tenant-scoped query in the system (permission checks, list endpoints, analytics) needs to filter by institution constantly. Requiring every such query to join up through `Department → Faculty → School → Institution` just to filter by tenant is unnecessary overhead repeated everywhere. Storing `institution` directly on every core model, kept in sync with its parent chain, makes tenant isolation a single indexed field check rather than a multi-table join on every request — cheap to keep consistent (enforced at creation time from the parent) and expensive to redo everywhere it's needed otherwise. The same denormalization pattern applies to `Venue`, `Course`, `Student`, `LecturerStaff`, and `AdminOfficer` further down this document.
+**Why `code` is unique platform-wide rather than just within its immediate parent:** department codes do double duty inside course codes (e.g. `CSC301`), which are referenced standalone without a faculty qualifier attached. If two faculties could both have a `CSC` department, `CSC301` would be ambiguous about which one it belongs to. School and faculty codes carry lower risk of this kind of standalone reuse, but for consistency and simplicity, uniqueness is enforced the same way across all three.
 
 ---
 
@@ -78,8 +55,7 @@ All authenticated users share a common identity layer, with role-specific profil
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
-| `institution` | Reference → Institution | Required | Which tenant this identity belongs to |
-| `identifier` | Text | Unique within institution (composite with `institution`) | Matric number (students) or staff ID (lecturers/admins) — the login username |
+| `identifier` | Text | Unique, required | Matric number (students) or staff ID (lecturers/admins) — the login username |
 | `password_hash` | Text | Required | Securely hashed password, never stored in plain text |
 | `role` | Choice | Required | One of: `student`, `lecturer`, `admin` — determines which profile model applies |
 | `requires_password_reset` | Boolean | Default: true | Forces a password change on first login for newly seeded accounts |
@@ -89,16 +65,13 @@ All authenticated users share a common identity layer, with role-specific profil
 
 **Why `is_active` instead of deletion:** a graduated student or a staff member who leaves still has historical records attached to them (past reports, past bookings). Deleting the user would orphan that history; deactivating preserves the audit trail while blocking further login.
 
-**Consequence of institution-scoped identifiers for login:** since `identifier` is only unique within an institution, a login by matric number or staff ID alone is no longer sufficient to uniquely resolve a user platform-wide — two different institutions could have a student with the same matric number. Login needs institution context alongside the identifier, resolved either by the client (e.g. a subdomain or institution selector per deployment) or by asking for it explicitly on the login screen. This should be decided during the Day 4 auth-endpoint work, not assumed away.
-
 ### 2.2 `Student` (profile, one-to-one with User)
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
 | `user` | Reference → User | Required, one-to-one | Linked base identity |
-| `institution` | Reference → Institution | Required | Denormalized from `department.institution` |
-| `matric_number` | Text | Unique within institution | Also mirrored as `User.identifier`, kept here for domain-specific queries |
+| `matric_number` | Text | Unique, required | Also mirrored as `User.identifier`, kept here for domain-specific queries |
 | `full_name` | Text | Required | |
 | `department` | Reference → Department | Required | Student's home department — faculty is not stored separately, since it's always derivable through `department.faculty` |
 | `level` | Integer | Required | Academic level (100, 200, 300, etc.) |
@@ -115,8 +88,7 @@ All authenticated users share a common identity layer, with role-specific profil
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
 | `user` | Reference → User | Required, one-to-one | Linked base identity |
-| `institution` | Reference → Institution | Required | Denormalized from `department.institution` |
-| `staff_id` | Text | Unique within institution | |
+| `staff_id` | Text | Unique, required | |
 | `full_name` | Text | Required | |
 | `department` | Reference → Department | Required | Home department |
 | `email` | Text | Optional | For email notification delivery |
@@ -129,8 +101,7 @@ All authenticated users share a common identity layer, with role-specific profil
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
 | `user` | Reference → User | Required, one-to-one | Linked base identity |
-| `institution` | Reference → Institution | Required | Denormalized from whichever scope field is populated |
-| `staff_id` | Text | Unique within institution | |
+| `staff_id` | Text | Unique, required | |
 | `full_name` | Text | Required | |
 | `level` | Choice | Required | One of: `department`, `faculty`, `school` |
 | `scope_department` | Reference → Department | Nullable | Set only if `level = department` |
@@ -150,8 +121,7 @@ All authenticated users share a common identity layer, with role-specific profil
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
-| `institution` | Reference → Institution | Required | Each institution manages its own facility list |
-| `name` | Text | Unique within institution | e.g. "Projector", "Air Conditioning", "Exam-style seating", "Whiteboard" |
+| `name` | Text | Unique, required | e.g. "Projector", "Air Conditioning", "Exam-style seating", "Whiteboard" |
 
 **Why a real table instead of a text/tag field on Venue:** analytics and search both need to query "venues with X facility" reliably. A free-text field invites inconsistent entries ("projector" vs "Projector" vs "proj."); a proper table with a many-to-many relationship to Venue keeps facility names canonical and queryable.
 
@@ -160,8 +130,7 @@ All authenticated users share a common identity layer, with role-specific profil
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
-| `institution` | Reference → Institution | Required | Denormalized from whichever owning-level field is populated |
-| `name` | Text | Unique within institution | e.g. "LT1", "Faculty of Science Auditorium" |
+| `name` | Text | Unique, required | e.g. "LT1", "Faculty of Science Auditorium" |
 | `venue_type` | Choice | Required | One of: `lecture_hall`, `laboratory`, `exam_hall`, `multipurpose` |
 | `capacity` | Integer | Required | Standard seating capacity |
 | `exam_capacity` | Integer | Nullable | Reduced capacity under exam-spacing conditions, if different from standard capacity |
@@ -188,8 +157,7 @@ Courses are not always department-owned. A course may belong to a single departm
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | Integer (PK) | Auto | Primary key |
-| `institution` | Reference → Institution | Required | Denormalized from whichever owning-level field is populated |
-| `code` | Text | Unique within institution | e.g. "CSC301" |
+| `code` | Text | Unique, required | e.g. "CSC301" |
 | `title` | Text | Required | Full course title |
 | `level` | Integer | Required | Academic level the course is offered at |
 | `owning_level` | Choice | Required | One of: `department`, `faculty`, `school`, `general` |
@@ -198,9 +166,9 @@ Courses are not always department-owned. A course may belong to a single departm
 | `owning_school` | Reference → School | Nullable | Set only if `owning_level = school` |
 | `lecturers` | Many-to-many → LecturerStaff | Optional | Staff assigned to teach this course this term |
 
-**Why `general` has no matching nullable owner field:** a general course (GST-style, visible to the entire institution) doesn't belong to any single branch of the hierarchy — its scope is the institution itself, which is already captured by the `institution` field every model carries. No department/faculty/school field is populated in this case.
+**Why `general` has no matching nullable owner field:** a general course (GST-style, visible institution-wide) doesn't belong to any single branch of the hierarchy — it simply has no department/faculty/school populated, and the resolution logic treats an `owning_level = general` course as visible to every student regardless of scope.
 
-**Default visibility, by ownership:** a `department`-owned course is visible only to students in that department; a `faculty`-owned course is visible to every department under that faculty; a `school`-owned course is visible to every department under that school; a `general` course is visible institution-wide. This default is what a student sees before any explicit sharing is applied — see `CourseAccessGrant` below for the cases that fall outside this default.
+**Default visibility, by ownership:** a `department`-owned course is visible only to students in that department; a `faculty`-owned course is visible to every department under that faculty; a `school`-owned course is visible to every department under that school; a `general` course is visible to every student regardless of department, faculty, or school. This default is what a student sees before any explicit sharing is applied — see `CourseAccessGrant` below for the cases that fall outside this default.
 
 ### 4.2 `CourseAccessGrant`
 
@@ -414,15 +382,14 @@ A materialized, dated instance of a recurring `TimetableEntry`. This is the mode
 ## Model Relationship Overview
 
 ```
-Institution (tenant root — every model below belongs to exactly one)
-  └── School
-        └── Faculty
-              └── Department
-                    ├── Student (faculty derived via department.faculty)
-                    ├── LecturerStaff
-                    └── AdminOfficer (scope_department; scope_faculty and
-                          scope_school set at their respective levels instead,
-                          and each resolves downward through the hierarchy)
+School
+  └── Faculty
+        └── Department
+              ├── Student (faculty derived via department.faculty)
+              ├── LecturerStaff
+              └── AdminOfficer (scope_department; scope_faculty and
+                    scope_school set at their respective levels instead,
+                    and each resolves downward through the hierarchy)
 
 Course (owning_level: department / faculty / school / general)
   ├── CourseAccessGrant (explicit sharing outside the default ownership rule)
@@ -453,7 +420,6 @@ AuditLog → any model, via generic (target_model, target_id) reference
 
 ## Design Principles Applied Throughout
 
-0. **Every institution's data is isolated from every other's**, with `institution` denormalized directly onto every core model rather than requiring a join up through the hierarchy to determine tenant on every query. Uniqueness constraints (codes, names, staff IDs, matric numbers) are scoped to institution, never global — the same abbreviation or identifier can validly exist in two different institutions without conflict.
 1. **Ownership and scope always follow the same three-nullable-field pattern** (`AdminOfficer.scope_*`, `Venue.owning_*`, `Course.owning_*`, `CourseAccessGrant.granted_to_*`) so the conflict-detection and permission logic can compare "who has authority" using one consistent shape everywhere it's checked — and admin scope always resolves downward through the hierarchy (a faculty admin's authority includes every department beneath their faculty), not as a flat equality check against a single record.
 2. **Recurring structure and dated instance are always separate** (`TimetableEntry` vs `LectureSession`) so a one-off change to a single date never disturbs the recurring pattern, and reporting always attaches to something concrete and dated.
 3. **Generic references are used only where genuinely generic** (`AuditLog`, `Notification.related_model`) — everywhere else, explicit foreign keys are preferred to keep referential integrity enforced by the database rather than by application code.
