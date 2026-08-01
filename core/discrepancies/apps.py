@@ -4,3 +4,6 @@ from django.apps import AppConfig
 class DiscrepanciesConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "discrepancies"
+
+    def ready(self):
+        import discrepancies.signals  # noqa

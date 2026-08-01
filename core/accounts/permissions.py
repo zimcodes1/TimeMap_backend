@@ -81,6 +81,20 @@ def get_user_scope_schools(user):
     return School.objects.none()
 
 
+from discrepancies.middleware import set_current_user
+from hierarchy.models import Department, Faculty, School
+from rest_framework import permissions
+from rest_framework.permissions import BasePermission
+
+
+class IsAuthenticated(permissions.IsAuthenticated):
+    def has_permission(self, request, view):
+        is_auth = super().has_permission(request, view)
+        if is_auth and request.user and request.user.is_authenticated:
+            set_current_user(request.user)
+        return is_auth
+
+
 class IsPasswordResetDone(BasePermission):
     """
     Blocks authenticated users from accessing endpoints if requires_password_reset is True.
@@ -90,6 +104,7 @@ class IsPasswordResetDone(BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
+        set_current_user(request.user)
         return not request.user.requires_password_reset
 
 

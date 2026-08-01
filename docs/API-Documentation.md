@@ -441,8 +441,131 @@ Extends a `TimetableEntry` with invigilator assignments and auto-calculated cand
 
 ---
 
-## 8. Interactive Documentation & Schema
+## 8. Discrepancy Workflow & Audit Log Endpoints (`/api/discrepancies/`)
+
+### 8.1 Discrepancy Requests
+Submits shifts, postponements, cancellations, or cross-level booking requests. Re-validates conflicts at submission time and executes state machine application upon approval.
+
+* **URL**: `/api/discrepancies/requests/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST`) - Instance-Level Shift (Single Date Session)
+```json
+{
+  "lecture_session": 5, // Targets a single dated LectureSession instance
+  "request_type": "shift_venue", // "shift_venue", "shift_time", "postpone", "cancel", "create_booking"
+  "proposed_venue": 2,
+  "reason": "Air conditioner maintenance in LT1 on Sept 14"
+}
+```
+
+#### Request Body (`POST`) - Pattern-Level Shift (All Future Recurrence Dates)
+```json
+{
+  "timetable_entry": 1, // Targets parent TimetableEntry
+  "request_type": "shift_time",
+  "proposed_start_time": "11:00:00",
+  "proposed_end_time": "13:00:00",
+  "reason": "Lecturer timetable collision resolved for future sessions"
+}
+```
+
+#### Custom Actions:
+* **Approve Request**: `POST /api/discrepancies/requests/{id}/approve/`
+  * Validates conflict safety right at decision time, transitions status `pending` -> `approved` -> `applied`, and updates live schedule records.
+* **Reject Request**: `POST /api/discrepancies/requests/{id}/reject/`
+  * Body: `{"reason": "Venue already reserved for faculty event"}`
+* **Withdraw Request**: `POST /api/discrepancies/requests/{id}/withdraw/`
+  * Usable by the original requester while status is `pending`.
+
+---
+
+### 8.2 Generic Audit Logs
+Read-only query endpoint for audit trail records captured across core models (`Venue`, `Course`, `CourseAccessGrant`, `TimetableEntry`, `LectureSession`, `ExamSitting`, `DiscrepancyRequest`).
+
+* **URL**: `/api/discrepancies/audit-logs/`
+* **Methods**: `GET`
+* **Auth Required**: Yes
+
+#### Response Object
+```json
+{
+  "id": 42,
+  "actor": 1,
+  "actor_identifier": "DEPT1_ADM",
+  "action": "create", // "create", "update", "delete", "approve", "reject"
+  "target_model": "Venue",
+  "target_id": 3,
+  "before_snapshot": null,
+  "after_snapshot": {
+    "id": 3,
+    "name": "Audit Test Hall",
+    "capacity": 80,
+    "owning_level": "department",
+    "owning_department": 1
+  },
+  "timestamp": "2026-08-01T18:07:00Z"
+}
+```
+
+---
+
+## 9. Class Representative Reporting Endpoints (`/api/reporting/`)
+
+### 9.1 Class Representative Reports
+Submits lecture-hold reports for dated `LectureSession` instances. Strictly enforces server-side reporting window expiration (`now <= window_expires_at`).
+
+* **URL**: `/api/reporting/reports/`
+* **Methods**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+
+#### Request Body (`POST`) - Class Rep Report Submission
+```json
+{
+  "lecture_session": 5,
+  "held": true, // true if lecture was held, false if not held
+  "reason": "Lecture held successfully on time in LT1."
+}
+```
+
+#### Custom Actions:
+* **Lecturer Dispute Response**: `POST /api/reporting/reports/{id}/respond/`
+  * Body: `{"response_text": "Class rep arrived 20 minutes late; lecture was held from 9:30 AM."}`
+  * Restricted to assigned course lecturers.
+
+---
+
+### 9.2 Unreported Session Flags
+Tracks lecture sessions whose reporting window expired without a report being filed.
+
+* **URL**: `/api/reporting/flags/`
+* **Methods**: `GET`
+* **Auth Required**: Yes (Department Admins)
+
+#### Response Object
+```json
+{
+  "id": 1,
+  "lecture_session": 8,
+  "timetable_entry_title": "CSC301 Weekly Lecture",
+  "course_code": "CSC301",
+  "session_date": "2026-07-28",
+  "flagged_at": "2026-07-28T13:00:00Z",
+  "acknowledged_by": 1,
+  "acknowledged_by_name": "Admin 1",
+  "acknowledged_at": "2026-07-28T14:30:00Z"
+}
+```
+
+#### Custom Actions:
+* **Acknowledge Flag**: `POST /api/reporting/flags/{id}/acknowledge/`
+* **Manual Sweep Trigger**: `POST /api/reporting/flags/trigger_sweep/`
+
+---
+
+## 10. Interactive Documentation & Schema
 
 * **Swagger UI**: `http://localhost:8000/api/docs/swagger/`
 * **ReDoc UI**: `http://localhost:8000/api/docs/redoc/`
 * **OpenAPI 3.0 Schema (JSON)**: `http://localhost:8000/api/schema/`
+
+

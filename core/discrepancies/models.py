@@ -1,6 +1,6 @@
 from accounts.models import AdminOfficer, User
 from django.db import models
-from scheduling.models import TimetableEntry
+from scheduling.models import LectureSession, TimetableEntry
 from venues.models import Venue
 
 
@@ -16,15 +16,21 @@ class DiscrepancyRequest(models.Model):
         PENDING = "pending", "Pending"
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
+        APPLIED = "applied", "Applied"
+        WITHDRAWN = "withdrawn", "Withdrawn"
 
     timetable_entry = models.ForeignKey(
         TimetableEntry, null=True, blank=True, on_delete=models.CASCADE, related_name="discrepancy_requests"
+    )
+    lecture_session = models.ForeignKey(
+        LectureSession, null=True, blank=True, on_delete=models.CASCADE, related_name="discrepancy_requests"
     )
     request_type = models.CharField(max_length=30, choices=RequestType.choices)
     proposed_venue = models.ForeignKey(
         Venue, null=True, blank=True, on_delete=models.SET_NULL, related_name="proposed_discrepancies"
     )
     proposed_start_time = models.TimeField(null=True, blank=True)
+    proposed_end_time = models.TimeField(null=True, blank=True)
     proposed_date = models.DateField(null=True, blank=True)
     reason = models.TextField()
 
@@ -51,7 +57,7 @@ class AuditLog(models.Model):
         APPROVE = "approve", "Approve"
         REJECT = "reject", "Reject"
 
-    actor = models.ForeignKey(User, on_delete=models.CASCADE, related_name="audit_logs")
+    actor = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="audit_logs")
     action = models.CharField(max_length=20, choices=Action.choices)
     target_model = models.CharField(max_length=100)
     target_id = models.IntegerField()
