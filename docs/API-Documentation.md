@@ -562,10 +562,64 @@ Tracks lecture sessions whose reporting window expired without a report being fi
 
 ---
 
-## 10. Interactive Documentation & Schema
+## 10. Notifications Infrastructure Endpoints (`/api/notifications/`)
+
+### 10.1 In-App Inbox
+Manages recipient notifications, read states, and unread counters.
+
+* **URL**: `/api/notifications/inbox/`
+* **Methods**: `GET`
+* **Auth Required**: Yes
+
+#### Response Object
+```json
+{
+  "id": 15,
+  "recipient": 2,
+  "notification_type": "discrepancy_approved", // "discrepancy_approved", "discrepancy_rejected", "session_shifted", "session_cancelled", "session_unreported"
+  "title": "Discrepancy Request Approved",
+  "body": "Your shift_venue request #12 has been approved and applied.",
+  "related_model": "DiscrepancyRequest",
+  "related_id": 12,
+  "read_at": null,
+  "is_read": false,
+  "created_at": "2026-08-02T12:00:00Z"
+}
+```
+
+#### Custom Actions:
+* **Mark Single Read**: `POST /api/notifications/inbox/{id}/read/`
+* **Mark All Read**: `POST /api/notifications/inbox/mark-all-read/`
+* **Unread Count**: `GET /api/notifications/inbox/unread-count/`
+
+---
+
+### 10.2 FCM Device Token Registration
+Registers and deactivates Firebase Cloud Messaging (FCM) device push tokens for push notification delivery.
+
+* **URL**: `/api/notifications/devices/`
+* **Methods**: `GET`, `POST`
+* **Auth Required**: Yes
+
+#### Request Body (`POST`) - Register Device Token
+```json
+{
+  "fcm_token": "fcm_device_token_string_here",
+  "platform": "android" // "android", "ios", "web"
+}
+```
+
+#### Custom Actions:
+* **Deactivate Token**: `POST /api/notifications/devices/deactivate/`
+  * Body: `{"fcm_token": "fcm_device_token_string_here"}`
+
+---
+
+## 11. Interactive Documentation & Schema
 
 * **Swagger UI**: `http://localhost:8000/api/docs/swagger/`
 * **ReDoc UI**: `http://localhost:8000/api/docs/redoc/`
 * **OpenAPI 3.0 Schema (JSON)**: `http://localhost:8000/api/schema/`
+
 
 

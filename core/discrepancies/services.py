@@ -239,6 +239,23 @@ def approve_discrepancy_request(discrepancy, admin_user):
 
     # Automatically trigger database application
     apply_discrepancy_request(discrepancy)
+
+    # Notify requester
+    if discrepancy.initiated_by:
+        try:
+            from notifications.models import Notification
+            from notifications.services import dispatch_event_notification
+            dispatch_event_notification(
+                recipient=discrepancy.initiated_by,
+                notification_type=Notification.NotificationType.DISCREPANCY_APPROVED,
+                title="Discrepancy Request Approved",
+                body=f"Your {discrepancy.request_type} request #{discrepancy.id} has been approved and applied.",
+                related_model="DiscrepancyRequest",
+                related_id=discrepancy.id,
+            )
+        except Exception as e:
+            pass
+
     return discrepancy
 
 
@@ -255,6 +272,23 @@ def reject_discrepancy_request(discrepancy, admin_user, reason=""):
     discrepancy.decided_by = admin_prof
     discrepancy.decided_at = timezone.now()
     discrepancy.save()
+
+    # Notify requester
+    if discrepancy.initiated_by:
+        try:
+            from notifications.models import Notification
+            from notifications.services import dispatch_event_notification
+            dispatch_event_notification(
+                recipient=discrepancy.initiated_by,
+                notification_type=Notification.NotificationType.DISCREPANCY_REJECTED,
+                title="Discrepancy Request Rejected",
+                body=f"Your {discrepancy.request_type} request #{discrepancy.id} was rejected. {reason}",
+                related_model="DiscrepancyRequest",
+                related_id=discrepancy.id,
+            )
+        except Exception as e:
+            pass
+
     return discrepancy
 
 

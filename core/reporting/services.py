@@ -75,8 +75,27 @@ def run_unreported_sessions_sweep(window_hours=2):
     for session in sessions:
         expiry = calculate_report_window_expiry(session, window_hours=window_hours)
         if now > expiry:
-            UnreportedSessionFlag.objects.create(lecture_session=session)
+            flag = UnreportedSessionFlag.objects.create(lecture_session=session)
             flagged_count += 1
+
+            # Notify department admins
+            dept = session.timetable_entry.course.owning_department if session.timetable_entry and session.timetable_entry.course else None
+            if dept:
+                admins = AdminOfficer.objects.filter(level="department", scope_department=dept)
+                for admin in admins:
+                    try:
+                        from notifications.models import Notification
+                        from notifications.services import dispatch_event_notification
+                        dispatch_event_notification(
+                            recipient=admin.user,
+                            notification_type=Notification.NotificationType.SESSION_UNREPORTED,
+                            title="Unreported Lecture Session",
+                            body=f"Session for '{session.timetable_entry.title}' on {session.session_date} was not reported within window.",
+                            related_model="UnreportedSessionFlag",
+                            related_id=flag.id,
+                        )
+                    except Exception:
+                        pass
 
     return flagged_count
 

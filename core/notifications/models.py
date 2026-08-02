@@ -28,6 +28,7 @@ class DeviceToken(models.Model):
     class Platform(models.TextChoices):
         IOS = "ios", "iOS"
         ANDROID = "android", "Android"
+        WEB = "web", "Web"
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="device_tokens")
     fcm_token = models.CharField(max_length=255, unique=True)
