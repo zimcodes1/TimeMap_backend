@@ -14,6 +14,7 @@ from rest_framework.response import Response
 
 from .models import ClassRepReport, UnreportedSessionFlag
 from .serializers import (
+    AnalyticsQueryParamsSerializer,
     ClassRepReportSerializer,
     LecturerResponseSerializer,
     UnreportedSessionFlagSerializer,
@@ -96,3 +97,48 @@ class UnreportedSessionFlagViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
     def trigger_sweep(self, request):
         flagged_count = run_unreported_sessions_sweep()
         return Response({"message": f"Sweep completed successfully. Flagged {flagged_count} unreported sessions.", "flagged_count": flagged_count}, status=status.HTTP_200_OK)
+
+
+class AnalyticsViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole]
+
+    @extend_schema(summary="Get lecture-hold rate analytics summary & breakdown", parameters=[AnalyticsQueryParamsSerializer], responses={200: dict})
+    @action(detail=False, methods=["get"], url_path="lecture-hold-rate")
+    def lecture_hold_rate(self, request):
+        from .analytics import get_lecture_hold_rate_analytics
+        data = get_lecture_hold_rate_analytics(
+            user=request.user,
+            start_date=request.query_params.get("start_date"),
+            end_date=request.query_params.get("end_date"),
+            department_id=request.query_params.get("department_id"),
+            course_id=request.query_params.get("course_id"),
+            group_by=request.query_params.get("group_by", "course"),
+        )
+        return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Get venue utilization analytics summary & breakdown", parameters=[AnalyticsQueryParamsSerializer], responses={200: dict})
+    @action(detail=False, methods=["get"], url_path="venue-utilization")
+    def venue_utilization(self, request):
+        from .analytics import get_venue_utilization_analytics
+        data = get_venue_utilization_analytics(
+            user=request.user,
+            start_date=request.query_params.get("start_date"),
+            end_date=request.query_params.get("end_date"),
+            venue_id=request.query_params.get("venue_id"),
+            group_by=request.query_params.get("group_by", "venue"),
+        )
+        return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Get discrepancy frequency analytics summary", parameters=[AnalyticsQueryParamsSerializer], responses={200: dict})
+    @action(detail=False, methods=["get"], url_path="discrepancy-frequency")
+    def discrepancy_frequency(self, request):
+        from .analytics import get_discrepancy_frequency_analytics
+        data = get_discrepancy_frequency_analytics(
+            user=request.user,
+            start_date=request.query_params.get("start_date"),
+            end_date=request.query_params.get("end_date"),
+            venue_id=request.query_params.get("venue_id"),
+            request_type=request.query_params.get("request_type"),
+            group_by=request.query_params.get("group_by", "venue"),
+        )
+        return Response(data, status=status.HTTP_200_OK)

@@ -139,44 +139,36 @@ This continues directly from Weeks 1–3, which delivered the organizational hie
 ---
 
 # Week 7 — Analytics & Calendar Sync
+# Week 7 — Analytics (Calendar Sync Omitted)
 
-**Goal:** read-only aggregation endpoints for administrative analytics, and the fully optional, isolated Calendar sync backend.
+**Goal:** read-only aggregation endpoints for administrative analytics (lecture-hold rate, venue utilization, discrepancy frequency). Note: Google Calendar integration is explicitly excluded from this build phase as in-app inbox and transactional emails are sufficient.
 
-**Why last among the functional features:** analytics has nothing meaningful to compute until real data exists from every prior week; Calendar sync is explicitly additive and shouldn't risk core-path time earlier in the schedule.
+**Why now:** analytics has nothing meaningful to compute until real data exists from every prior week.
 
 ## Day 1 — Aggregation Query Design
 
-1. Build the lecture-hold-rate aggregation: held vs. not-held count from `ClassRepReport`, grouped by course, by lecturer, and by department, over a selectable date range.
-2. Build the venue utilization aggregation: booked hours vs. theoretically available hours per venue, over a selectable date range.
-3. Build the discrepancy-frequency aggregation: count of `DiscrepancyRequest` records per venue, to surface venues that get shifted unusually often.
+1. Build the lecture-hold-rate aggregation: held vs. not-held count from `ClassRepReport`, grouped by course, by lecturer, and by department, over a selectable date range (`start_date`, `end_date`).
+2. Build the venue utilization aggregation: booked hours vs available hours per venue over a selectable date range.
+3. Build the discrepancy-frequency aggregation: count of `DiscrepancyRequest` records per venue and request type, to surface venues or courses that get shifted/cancelled unusually often.
 4. Keep these as pure read queries against existing tables — no new write paths, so a bug here can misreport a number but can never corrupt scheduling data.
 
 ## Day 2 — Scoped Analytics Endpoints
 
-1. Build the API endpoints exposing Day 1's aggregations, each correctly scoped to the requesting admin's level, matching the same downward-resolving scope pattern used everywhere else in the system.
-2. Add date-range and grouping parameters (by week, by month, by term) rather than a single fixed view.
-3. Test: aggregation numbers are verified by hand against a small, known seeded dataset (not just "the query runs without error") — a subtly wrong aggregate (e.g. double-counting a session materialized from a recurring entry) is easy to miss without an independently calculated expected value to check against.
+1. Build the API endpoints exposing Day 1's aggregations under `/api/reporting/analytics/`, each correctly scoped to the requesting admin's level, matching the same downward-resolving scope pattern used everywhere else in the system.
+2. Add date-range (`start_date`, `end_date`) and grouping parameters (`group_by`) rather than a single fixed view.
+3. Test: aggregation numbers are verified by hand against a known dataset.
 
-## Day 3 — Calendar Connection Model & OAuth Flow
+## Day 3 & 4 — Optimization & Hierarchical Bounds
 
-1. Model `CalendarConnection`: `user` (one-to-one), `provider`, `access_token` (encrypted at rest), `refresh_token` (encrypted at rest), `token_expires_at`, `connected_at`, `is_active`.
-2. Build the Google OAuth connect and callback endpoints, and the token refresh handling.
-3. Build a disconnect endpoint, cleanly deactivating the connection without deleting historical data about it.
-4. Test: the OAuth flow completes correctly end to end (tested manually against a real Google account); disconnect correctly stops any further calendar push without affecting anything else.
+1. Verify query efficiency across `ClassRepReport`, `LectureSession`, `Venue`, and `DiscrepancyRequest` aggregations.
+2. Ensure strict scope filtering (Department Admin sees department data; Faculty Admin sees faculty & department data under their faculty; School Admin sees school data).
 
-## Day 4 — Calendar Push & Isolation Verification
+## Day 5 — Full Test Suite & API Documentation
 
-1. Build the calendar push service — on a confirmed schedule entry relevant to a connected user, push it to their Google Calendar via the API.
-2. **Explicitly test the fallback behavior**: a user with no `CalendarConnection`, and a user whose push attempt fails (expired token, revoked access), should both see *zero* effect on any other part of the system. This is the test that proves the earlier architectural decision — Calendar sync as additive, not load-bearing — actually holds in the real implementation.
-3. Test: a successful push appears correctly in a real connected test calendar; a failed push is logged/handled quietly without disrupting anything else.
+1. Write unit tests covering lecture-hold rate, venue utilization, and discrepancy frequency calculations.
+2. Document all new endpoints for the OpenAPI schema and API Documentation guide.
 
-## Day 5 — Full Test Suite & Documentation
-
-1. End-to-end test across the full analytics and calendar flows.
-2. Document all new endpoints for the OpenAPI schema.
-3. Write a short internal note confirming Calendar sync remains fully optional and isolated, as verified by Day 4's tests.
-
-**End of Week 7 checkpoint:** scoped, verified-accurate analytics aggregation endpoints exist for lecture-hold rate, venue utilization, and discrepancy frequency; Calendar sync is fully functional end to end via OAuth, proven not to affect any other part of the system if absent or failing — all reachable purely through the API.
+**End of Week 7 checkpoint:** scoped, verified-accurate analytics aggregation endpoints exist for lecture-hold rate, venue utilization, and discrepancy frequency — all reachable purely through the API.
 
 ---
 

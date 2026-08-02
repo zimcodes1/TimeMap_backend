@@ -68,3 +68,14 @@ class UnreportedSessionFlagSerializer(serializers.ModelSerializer):
             "acknowledged_at",
         )
         read_only_fields = fields
+
+
+class AnalyticsQueryParamsSerializer(serializers.Serializer):
+    start_date = serializers.DateField(required=False)
+    end_date = serializers.DateField(required=False)
+    department_id = serializers.IntegerField(required=False)
+    course_id = serializers.IntegerField(required=False)
+    venue_id = serializers.IntegerField(required=False)
+    request_type = serializers.CharField(required=False)
+    group_by = serializers.CharField(required=False, default="course")
+

@@ -615,11 +615,97 @@ Registers and deactivates Firebase Cloud Messaging (FCM) device push tokens for 
 
 ---
 
-## 11. Interactive Documentation & Schema
+## 11. Administrative Analytics Endpoints (`/api/reporting/analytics/`)
+
+Read-only aggregation endpoints for administrative metrics, scoped strictly to the requesting admin officer's level (Department, Faculty, or School).
+
+### 11.1 Lecture-Hold Rate Analytics
+* **URL**: `/api/reporting/analytics/lecture-hold-rate/`
+* **Methods**: `GET`
+* **Query Parameters**: `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD), `department_id`, `course_id`, `group_by` ("course", "lecturer", "department")
+
+#### Response Object
+```json
+{
+  "summary": {
+    "total_reports": 24,
+    "held_count": 20,
+    "not_held_count": 4,
+    "hold_rate_percentage": 83.33
+  },
+  "breakdown": [
+    {
+      "course_id": 1,
+      "course_code": "CSC301",
+      "course_title": "Data Structures",
+      "total_reports": 10,
+      "held_count": 9,
+      "not_held_count": 1,
+      "hold_rate_percentage": 90.0
+    }
+  ]
+}
+```
+
+---
+
+### 11.2 Venue Utilization Analytics
+* **URL**: `/api/reporting/analytics/venue-utilization/`
+* **Methods**: `GET`
+* **Query Parameters**: `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD), `venue_id`, `group_by` ("venue")
+
+#### Response Object
+```json
+{
+  "summary": {
+    "total_venues": 5,
+    "total_booked_hours": 120.5
+  },
+  "breakdown": [
+    {
+      "venue_id": 1,
+      "venue_name": "LT1",
+      "total_booked_hours": 32.0,
+      "total_sessions": 16
+    }
+  ]
+}
+```
+
+---
+
+### 11.3 Discrepancy Frequency Analytics
+* **URL**: `/api/reporting/analytics/discrepancy-frequency/`
+* **Methods**: `GET`
+* **Query Parameters**: `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD), `venue_id`, `request_type` ("shift_venue", "shift_time", "cancel", etc.)
+
+#### Response Object
+```json
+{
+  "summary": {
+    "total_discrepancies": 8,
+    "by_status": {
+      "approved": 5,
+      "rejected": 2,
+      "pending": 1
+    },
+    "by_request_type": {
+      "shift_venue": 4,
+      "cancel": 2,
+      "shift_time": 2
+    }
+  }
+}
+```
+
+---
+
+## 12. Interactive Documentation & Schema
 
 * **Swagger UI**: `http://localhost:8000/api/docs/swagger/`
 * **ReDoc UI**: `http://localhost:8000/api/docs/redoc/`
 * **OpenAPI 3.0 Schema (JSON)**: `http://localhost:8000/api/schema/`
+
 
 
 
