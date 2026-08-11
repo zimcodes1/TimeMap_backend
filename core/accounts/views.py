@@ -1,6 +1,8 @@
+from django.db import models
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,6 +10,7 @@ from rest_framework.views import APIView
 from .models import AdminOfficer, LecturerStaff, Student, User
 from .permissions import IsAdminUserRole, IsPasswordResetDone, get_user_scope_departments
 from .serializers import (
+    DEFAULT_NEW_USER_PASSWORD,
     AdminProfileSerializer,
     LecturerProfileSerializer,
     LoginSerializer,
@@ -93,7 +96,27 @@ class UserProfileView(APIView):
         )
 
 
-class StudentViewSet(viewsets.ModelViewSet):
+class BaseUserViewSet(viewsets.ModelViewSet):
+    @action(detail=True, methods=["post"], url_path="toggle-active")
+    def toggle_active(self, request, pk=None):
+        instance = self.get_object()
+        user = instance.user
+        user.is_active = not user.is_active
+        user.save(update_fields=["is_active"])
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="reset-password")
+    def reset_password(self, request, pk=None):
+        instance = self.get_object()
+        user = instance.user
+        user.set_password(DEFAULT_NEW_USER_PASSWORD)
+        user.requires_password_reset = True
+        user.save(update_fields=["password", "requires_password_reset"])
+        return Response({"detail": f"Password reset to default '{DEFAULT_NEW_USER_PASSWORD}' for {user.identifier}."})
+
+
+class StudentViewSet(BaseUserViewSet):
     serializer_class = StudentProfileSerializer
     permission_classes = [IsAuthenticated, IsPasswordResetDone]
 
@@ -102,7 +125,7 @@ class StudentViewSet(viewsets.ModelViewSet):
         return Student.objects.filter(department__in=dept_qs)
 
 
-class LecturerViewSet(viewsets.ModelViewSet):
+class LecturerViewSet(BaseUserViewSet):
     serializer_class = LecturerProfileSerializer
     permission_classes = [IsAuthenticated, IsPasswordResetDone]
 
@@ -111,7 +134,7 @@ class LecturerViewSet(viewsets.ModelViewSet):
         return LecturerStaff.objects.filter(department__in=dept_qs)
 
 
-class AdminOfficerViewSet(viewsets.ModelViewSet):
+class AdminOfficerViewSet(BaseUserViewSet):
     serializer_class = AdminProfileSerializer
     permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole]
 
@@ -120,7 +143,7 @@ class AdminOfficerViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if hasattr(user, "admin_profile"):
             if user.admin_profile.level == "school":
-                return AdminOfficer.objects.all() 
+                return AdminOfficer.objects.all()
             elif user.admin_profile.level == "faculty":
                 return AdminOfficer.objects.filter(
                     models.Q(scope_faculty=user.admin_profile.scope_faculty)

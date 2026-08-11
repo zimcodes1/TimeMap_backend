@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 from hierarchy.models import Department, Faculty, School
 from rest_framework.permissions import BasePermission
 
@@ -81,7 +82,9 @@ def get_user_scope_schools(user):
     return School.objects.none()
 
 
+# pyrefly: ignore [missing-import]
 from discrepancies.middleware import set_current_user
+# pyrefly: ignore [missing-import]
 from hierarchy.models import Department, Faculty, School
 from rest_framework import permissions
 from rest_framework.permissions import BasePermission

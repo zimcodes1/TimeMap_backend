@@ -5,6 +5,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import AdminOfficer, LecturerStaff, Student, User
 
+DEFAULT_NEW_USER_PASSWORD = "12345678"
+
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -20,6 +22,30 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         model = Student
         fields = ("id", "user", "matric_number", "full_name", "department", "level", "is_class_rep", "email")
 
+    def create(self, validated_data):
+        matric_number = validated_data.get("matric_number", "").strip().upper()
+        user, created = User.objects.get_or_create(
+            identifier=matric_number,
+            defaults={
+                "role": User.Role.STUDENT,
+                "requires_password_reset": True,
+                "is_active": True,
+            },
+        )
+        if created:
+            user.set_password(DEFAULT_NEW_USER_PASSWORD)
+            user.save()
+
+        student = Student.objects.create(user=user, **validated_data)
+        return student
+
+    def update(self, instance, validated_data):
+        matric_number = validated_data.get("matric_number")
+        if matric_number and instance.user.identifier != matric_number.strip().upper():
+            instance.user.identifier = matric_number.strip().upper()
+            instance.user.save()
+        return super().update(instance, validated_data)
+
 
 class LecturerProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
@@ -27,6 +53,30 @@ class LecturerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = LecturerStaff
         fields = ("id", "user", "staff_id", "full_name", "department", "email")
+
+    def create(self, validated_data):
+        staff_id = validated_data.get("staff_id", "").strip().upper()
+        user, created = User.objects.get_or_create(
+            identifier=staff_id,
+            defaults={
+                "role": User.Role.LECTURER,
+                "requires_password_reset": True,
+                "is_active": True,
+            },
+        )
+        if created:
+            user.set_password(DEFAULT_NEW_USER_PASSWORD)
+            user.save()
+
+        lecturer = LecturerStaff.objects.create(user=user, **validated_data)
+        return lecturer
+
+    def update(self, instance, validated_data):
+        staff_id = validated_data.get("staff_id")
+        if staff_id and instance.user.identifier != staff_id.strip().upper():
+            instance.user.identifier = staff_id.strip().upper()
+            instance.user.save()
+        return super().update(instance, validated_data)
 
 
 class AdminProfileSerializer(serializers.ModelSerializer):
@@ -44,6 +94,30 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             "scope_faculty",
             "scope_school",
         )
+
+    def create(self, validated_data):
+        staff_id = validated_data.get("staff_id", "").strip().upper()
+        user, created = User.objects.get_or_create(
+            identifier=staff_id,
+            defaults={
+                "role": User.Role.ADMIN,
+                "requires_password_reset": True,
+                "is_active": True,
+            },
+        )
+        if created:
+            user.set_password(DEFAULT_NEW_USER_PASSWORD)
+            user.save()
+
+        admin_officer = AdminOfficer.objects.create(user=user, **validated_data)
+        return admin_officer
+
+    def update(self, instance, validated_data):
+        staff_id = validated_data.get("staff_id")
+        if staff_id and instance.user.identifier != staff_id.strip().upper():
+            instance.user.identifier = staff_id.strip().upper()
+            instance.user.save()
+        return super().update(instance, validated_data)
 
 
 class LoginSerializer(serializers.Serializer):
