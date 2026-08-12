@@ -122,7 +122,7 @@ class StudentViewSet(BaseUserViewSet):
 
     def get_queryset(self):
         dept_qs = get_user_scope_departments(self.request.user)
-        return Student.objects.filter(department__in=dept_qs)
+        return Student.objects.filter(department__in=dept_qs).exclude(user=self.request.user)
 
 
 class LecturerViewSet(BaseUserViewSet):
@@ -131,7 +131,7 @@ class LecturerViewSet(BaseUserViewSet):
 
     def get_queryset(self):
         dept_qs = get_user_scope_departments(self.request.user)
-        return LecturerStaff.objects.filter(department__in=dept_qs)
+        return LecturerStaff.objects.filter(department__in=dept_qs).exclude(user=self.request.user)
 
 
 class AdminOfficerViewSet(BaseUserViewSet):
@@ -141,12 +141,17 @@ class AdminOfficerViewSet(BaseUserViewSet):
     def get_queryset(self):
         dept_qs = get_user_scope_departments(self.request.user)
         user = self.request.user
+        qs = AdminOfficer.objects.all()
         if hasattr(user, "admin_profile"):
             if user.admin_profile.level == "school":
-                return AdminOfficer.objects.all()
+                qs = AdminOfficer.objects.all()
             elif user.admin_profile.level == "faculty":
-                return AdminOfficer.objects.filter(
+                qs = AdminOfficer.objects.filter(
                     models.Q(scope_faculty=user.admin_profile.scope_faculty)
                     | models.Q(scope_department__in=dept_qs)
                 )
-        return AdminOfficer.objects.filter(scope_department__in=dept_qs)
+            else:
+                qs = AdminOfficer.objects.filter(scope_department__in=dept_qs)
+        else:
+            qs = AdminOfficer.objects.filter(scope_department__in=dept_qs)
+        return qs.exclude(user=user)

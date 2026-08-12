@@ -161,6 +161,7 @@ class Command(BaseCommand):
                             "staff_id": staff_id,
                             "full_name": full_name,
                             "level": admin_level,
+                            "email": email,
                             "scope_department": scope_dept,
                             "scope_faculty": scope_fac,
                             "scope_school": scope_sch,

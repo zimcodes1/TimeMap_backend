@@ -107,6 +107,7 @@ class AdminOfficer(models.Model):
     staff_id = models.CharField(max_length=50, unique=True)
     full_name = models.CharField(max_length=255)
     level = models.CharField(max_length=20, choices=Level.choices)
+    email = models.EmailField(null=True, blank=True)
     scope_department = models.ForeignKey(
         Department, null=True, blank=True, on_delete=models.SET_NULL, related_name="admin_officers"
     )

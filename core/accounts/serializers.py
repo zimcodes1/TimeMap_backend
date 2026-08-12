@@ -90,6 +90,7 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             "staff_id",
             "full_name",
             "level",
+            "email",
             "scope_department",
             "scope_faculty",
             "scope_school",
