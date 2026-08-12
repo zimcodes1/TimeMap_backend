@@ -61,14 +61,14 @@ class VenueSerializer(serializers.ModelSerializer):
         if user.role == "admin" and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
             if admin_prof.level == "department":
-                if owning_level != Venue.OwningLevel.DEPARTMENT or owning_dept != admin_prof.scope_department:
+                if admin_prof.scope_department and (owning_level != Venue.OwningLevel.DEPARTMENT or owning_dept != admin_prof.scope_department):
                     raise serializers.ValidationError("Department admins can only create department-owned venues for their own department.")
             elif admin_prof.level == "faculty":
                 if owning_level == Venue.OwningLevel.SCHOOL:
                     raise serializers.ValidationError("Faculty admins cannot create school-level owned venues.")
-                if owning_level == Venue.OwningLevel.FACULTY and owning_fac != admin_prof.scope_faculty:
+                if admin_prof.scope_faculty and owning_level == Venue.OwningLevel.FACULTY and owning_fac != admin_prof.scope_faculty:
                     raise serializers.ValidationError("Faculty admins can only create faculty-owned venues for their own faculty.")
-                if owning_level == Venue.OwningLevel.DEPARTMENT and owning_dept.faculty != admin_prof.scope_faculty:
+                if admin_prof.scope_faculty and owning_level == Venue.OwningLevel.DEPARTMENT and owning_dept and owning_dept.faculty != admin_prof.scope_faculty:
                     raise serializers.ValidationError("Faculty admins can only create venues for departments within their faculty.")
 
         return attrs

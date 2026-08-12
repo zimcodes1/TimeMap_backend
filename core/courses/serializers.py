@@ -10,6 +10,7 @@ class CourseSerializer(serializers.ModelSerializer):
     owning_department_name = serializers.ReadOnlyField(source="owning_department.name")
     owning_faculty_name = serializers.ReadOnlyField(source="owning_faculty.name")
     owning_school_name = serializers.ReadOnlyField(source="owning_school.name")
+    registration_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -26,8 +27,12 @@ class CourseSerializer(serializers.ModelSerializer):
             "owning_school",
             "owning_school_name",
             "lecturers",
+            "registration_count",
         )
         read_only_fields = ("id",)
+
+    def get_registration_count(self, obj):
+        return obj.student_registrations.count()
 
     def validate_code(self, value):
         return value.strip().upper()
@@ -55,12 +60,12 @@ class CourseSerializer(serializers.ModelSerializer):
         if user.role == "admin" and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
             if admin_prof.level == "department":
-                if owning_level != Course.OwningLevel.DEPARTMENT or owning_dept != admin_prof.scope_department:
+                if admin_prof.scope_department and (owning_level != Course.OwningLevel.DEPARTMENT or owning_dept != admin_prof.scope_department):
                     raise serializers.ValidationError("Department admins can only create department-owned courses for their own department.")
             elif admin_prof.level == "faculty":
                 if owning_level in [Course.OwningLevel.SCHOOL, Course.OwningLevel.GENERAL]:
                     raise serializers.ValidationError("Faculty admins cannot create school-level or general courses.")
-                if owning_level == Course.OwningLevel.FACULTY and owning_fac != admin_prof.scope_faculty:
+                if admin_prof.scope_faculty and owning_level == Course.OwningLevel.FACULTY and owning_fac != admin_prof.scope_faculty:
                     raise serializers.ValidationError("Faculty admins can only create faculty-owned courses for their own faculty.")
 
         return attrs
@@ -69,6 +74,9 @@ class CourseSerializer(serializers.ModelSerializer):
 class CourseAccessGrantSerializer(serializers.ModelSerializer):
     course_code = serializers.ReadOnlyField(source="course.code")
     course_title = serializers.ReadOnlyField(source="course.title")
+    granted_to_department_name = serializers.ReadOnlyField(source="granted_to_department.name")
+    granted_to_faculty_name = serializers.ReadOnlyField(source="granted_to_faculty.name")
+    granted_to_school_name = serializers.ReadOnlyField(source="granted_to_school.name")
     initiated_by_name = serializers.ReadOnlyField(source="initiated_by.full_name")
     decided_by_name = serializers.ReadOnlyField(source="decided_by.full_name")
 
@@ -81,8 +89,11 @@ class CourseAccessGrantSerializer(serializers.ModelSerializer):
             "course_title",
             "granted_to_level",
             "granted_to_department",
+            "granted_to_department_name",
             "granted_to_faculty",
+            "granted_to_faculty_name",
             "granted_to_school",
+            "granted_to_school_name",
             "direction",
             "status",
             "initiated_by",
