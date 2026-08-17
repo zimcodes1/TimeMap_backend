@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "discrepancies",
     "notifications",
     "calendars",
+    "analytics",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

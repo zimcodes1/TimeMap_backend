@@ -1,3 +1,4 @@
+from datetime import date
 from accounts.permissions import (
     IsAdminUserRole,
     IsPasswordResetDone,
@@ -93,20 +94,43 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        qs = LectureSession.objects.none()
+
         if user.role == "student" and hasattr(user, "student_profile"):
             dept = user.student_profile.department
-            return LectureSession.objects.filter(
+            qs = LectureSession.objects.filter(
                 Q(timetable_entry__course__owning_department=dept)
                 | Q(timetable_entry__course__owning_faculty=dept.faculty)
                 | Q(timetable_entry__course__owning_school=dept.faculty.school)
                 | Q(timetable_entry__course__owning_level="general")
             ).distinct()
 
-        dept_qs = get_user_scope_departments(user)
-        return LectureSession.objects.filter(
-            Q(timetable_entry__course__owning_department__in=dept_qs)
-            | Q(venue__owning_department__in=dept_qs)
-        ).distinct()
+            # Non-class rep students cannot view previous past lectures
+            if not user.student_profile.is_class_rep:
+                qs = qs.filter(session_date__gte=date.today())
+        else:
+            dept_qs = get_user_scope_departments(user)
+            qs = LectureSession.objects.filter(
+                Q(timetable_entry__course__owning_department__in=dept_qs)
+                | Q(venue__owning_department__in=dept_qs)
+            ).distinct()
+
+        # Query parameters filters
+        session_date = self.request.query_params.get("session_date") or self.request.query_params.get("date")
+        start_date = self.request.query_params.get("start_date")
+        end_date = self.request.query_params.get("end_date")
+        status_param = self.request.query_params.get("status")
+
+        if session_date:
+            qs = qs.filter(session_date=session_date)
+        if start_date:
+            qs = qs.filter(session_date__gte=start_date)
+        if end_date:
+            qs = qs.filter(session_date__lte=end_date)
+        if status_param and status_param != "all":
+            qs = qs.filter(status=status_param)
+
+        return qs.order_by("session_date", "session_start_time")
 
 
 class ExamSittingViewSet(viewsets.ModelViewSet):

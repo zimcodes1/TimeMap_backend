@@ -112,6 +112,8 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
 class LectureSessionSerializer(serializers.ModelSerializer):
     timetable_entry_title = serializers.ReadOnlyField(source="timetable_entry.title")
     course_code = serializers.ReadOnlyField(source="timetable_entry.course.code")
+    course_title = serializers.ReadOnlyField(source="timetable_entry.course.title")
+    department_name = serializers.ReadOnlyField(source="timetable_entry.course.owning_department.name")
     venue_name = serializers.ReadOnlyField(source="venue.name")
 
     class Meta:
@@ -121,6 +123,8 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "timetable_entry",
             "timetable_entry_title",
             "course_code",
+            "course_title",
+            "department_name",
             "session_date",
             "session_start_time",
             "session_end_time",
