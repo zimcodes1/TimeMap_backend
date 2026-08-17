@@ -52,12 +52,15 @@ class Department(models.Model):
     faculty = models.ForeignKey(Faculty, on_delete=models.CASCADE, related_name="departments")
     name = models.CharField(max_length=255)
     code = models.CharField(max_length=20, unique=True, validators=[validate_code_format])
+    max_level = models.PositiveIntegerField(default=400)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def clean(self):
         super().clean()
         if self.code:
             self.code = self.code.strip().upper()
+        if self.max_level and self.max_level < 100:
+            raise ValidationError("Max level must be at least 100.")
 
     def save(self, *args, **kwargs):
         self.full_clean()

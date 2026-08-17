@@ -8,7 +8,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import AdminOfficer, LecturerStaff, Student, User
-from .permissions import IsAdminUserRole, IsPasswordResetDone, get_user_scope_departments
+from .permissions import (
+    IsAdminUserRole,
+    IsPasswordResetDone,
+    get_user_scope_admin_officers,
+    get_user_scope_departments,
+)
 from .serializers import (
     DEFAULT_NEW_USER_PASSWORD,
     AdminProfileSerializer,
@@ -139,19 +144,4 @@ class AdminOfficerViewSet(BaseUserViewSet):
     permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole]
 
     def get_queryset(self):
-        dept_qs = get_user_scope_departments(self.request.user)
-        user = self.request.user
-        qs = AdminOfficer.objects.all()
-        if hasattr(user, "admin_profile"):
-            if user.admin_profile.level == "school":
-                qs = AdminOfficer.objects.all()
-            elif user.admin_profile.level == "faculty":
-                qs = AdminOfficer.objects.filter(
-                    models.Q(scope_faculty=user.admin_profile.scope_faculty)
-                    | models.Q(scope_department__in=dept_qs)
-                )
-            else:
-                qs = AdminOfficer.objects.filter(scope_department__in=dept_qs)
-        else:
-            qs = AdminOfficer.objects.filter(scope_department__in=dept_qs)
-        return qs.exclude(user=user)
+        return get_user_scope_admin_officers(self.request.user).exclude(user=self.request.user)

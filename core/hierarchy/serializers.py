@@ -30,7 +30,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Department
-        fields = ("id", "faculty", "faculty_name", "school_name", "name", "code", "created_at")
+        fields = ("id", "faculty", "faculty_name", "school_name", "name", "code", "max_level", "created_at")
         read_only_fields = ("id", "created_at")
 
     def validate_code(self, value):
