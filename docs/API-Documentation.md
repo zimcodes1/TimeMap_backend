@@ -700,11 +700,144 @@ Read-only aggregation endpoints for administrative metrics, scoped strictly to t
 
 ---
 
-## 12. Interactive Documentation & Schema
+## 12. Dedicated Role-Based Analytics Endpoints (`/api/analytics/`)
+
+Delivers role-constrained lecture hold analytics for Class Representatives, Lecturers, and Admins.
+
+### 12.1 Class Representative Analytics
+* **URL**: `/api/analytics/class-rep/`
+* **Methods**: `GET`
+* **Auth Required**: Yes (`is_class_rep = true`)
+* **Query Parameters**: `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD)
+
+#### Response Object
+```json
+{
+  "student_info": {
+    "full_name": "Rep Alice",
+    "department": "Computer Science",
+    "level": 300
+  },
+  "query_range": {
+    "start_date": "2026-08-01",
+    "end_date": "2026-08-31"
+  },
+  "summary": {
+    "total_sessions": 12,
+    "held_count": 10,
+    "not_held_count": 2,
+    "cancelled_count": 0,
+    "hold_rate_percentage": 83.33
+  },
+  "course_breakdown": [
+    {
+      "course_id": 1,
+      "course_code": "CSC301",
+      "course_title": "Data Structures",
+      "total_sessions": 6,
+      "held_count": 5,
+      "not_held_count": 1,
+      "cancelled_count": 0,
+      "hold_rate_percentage": 83.33
+    }
+  ]
+}
+```
+
+---
+
+### 12.2 Lecturer Analytics
+* **URL**: `/api/analytics/lecturer/`
+* **Methods**: `GET`
+* **Auth Required**: Yes (Lecturer)
+* **Query Parameters**: `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD), `course_id` (optional; must be assigned to lecturer)
+
+#### Response Object
+```json
+{
+  "lecturer_info": {
+    "full_name": "Dr. Smith",
+    "staff_id": "LEC1",
+    "department": "Computer Science"
+  },
+  "query_range": {
+    "start_date": "2026-08-01",
+    "end_date": "2026-08-31",
+    "filtered_course": "CSC301"
+  },
+  "summary": {
+    "total_sessions": 15,
+    "held_count": 14,
+    "not_held_count": 1,
+    "cancelled_count": 0,
+    "hold_rate_percentage": 93.33
+  },
+  "course_breakdown": [
+    {
+      "course_id": 1,
+      "course_code": "CSC301",
+      "course_title": "Data Structures",
+      "total_sessions": 15,
+      "held_count": 14,
+      "not_held_count": 1,
+      "cancelled_count": 0,
+      "hold_rate_percentage": 93.33
+    }
+  ]
+}
+```
+
+---
+
+### 12.3 Admin Lecturer & Scope Analytics
+* **URL**: `/api/analytics/admin/`
+* **Methods**: `GET`
+* **Auth Required**: Yes (Admin)
+* **Query Parameters**: `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD), `lecturer_id` (optional), `course_id` (optional)
+
+#### Response Object
+```json
+{
+  "admin_info": {
+    "full_name": "Admin 1",
+    "level": "department"
+  },
+  "query_range": {
+    "start_date": "2026-08-01",
+    "end_date": "2026-08-31",
+    "filtered_lecturer": "Dr. Smith",
+    "filtered_course": null
+  },
+  "summary": {
+    "total_sessions": 20,
+    "held_count": 18,
+    "not_held_count": 2,
+    "cancelled_count": 0,
+    "hold_rate_percentage": 90.0
+  },
+  "lecturer_breakdown": [
+    {
+      "lecturer_id": 1,
+      "staff_id": "LEC1",
+      "full_name": "Dr. Smith",
+      "total_sessions": 20,
+      "held_count": 18,
+      "not_held_count": 2,
+      "cancelled_count": 0,
+      "hold_rate_percentage": 90.0
+    }
+  ]
+}
+```
+
+---
+
+## 13. Interactive Documentation & Schema
 
 * **Swagger UI**: `http://localhost:8000/api/docs/swagger/`
 * **ReDoc UI**: `http://localhost:8000/api/docs/redoc/`
 * **OpenAPI 3.0 Schema (JSON)**: `http://localhost:8000/api/schema/`
+
 
 
 
