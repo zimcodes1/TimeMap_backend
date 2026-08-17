@@ -12,7 +12,8 @@ from .permissions import (
     IsAdminUserRole,
     IsPasswordResetDone,
     get_user_scope_admin_officers,
-    get_user_scope_departments,
+    get_user_scope_students,
+    get_user_scope_lecturers,
 )
 from .serializers import (
     DEFAULT_NEW_USER_PASSWORD,
@@ -126,8 +127,7 @@ class StudentViewSet(BaseUserViewSet):
     permission_classes = [IsAuthenticated, IsPasswordResetDone]
 
     def get_queryset(self):
-        dept_qs = get_user_scope_departments(self.request.user)
-        return Student.objects.filter(department__in=dept_qs).exclude(user=self.request.user)
+        return get_user_scope_students(self.request.user).exclude(user=self.request.user)
 
 
 class LecturerViewSet(BaseUserViewSet):
@@ -135,8 +135,7 @@ class LecturerViewSet(BaseUserViewSet):
     permission_classes = [IsAuthenticated, IsPasswordResetDone]
 
     def get_queryset(self):
-        dept_qs = get_user_scope_departments(self.request.user)
-        return LecturerStaff.objects.filter(department__in=dept_qs).exclude(user=self.request.user)
+        return get_user_scope_lecturers(self.request.user).exclude(user=self.request.user)
 
 
 class AdminOfficerViewSet(BaseUserViewSet):

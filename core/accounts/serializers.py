@@ -82,10 +82,17 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         department = attrs.get("department") if "department" in attrs else (instance.department if instance else None)
         level = attrs.get("level") if "level" in attrs else (instance.level if instance else None)
 
+        if request and request.user and request.user.is_authenticated:
+            req_user = request.user
+            if not (req_user.is_superuser or (req_user.is_staff and not hasattr(req_user, "admin_profile"))):
+                if hasattr(req_user, "admin_profile") and req_user.admin_profile.level != "department":
+                    raise serializers.ValidationError({"detail": "Only department level admins can create or manage student accounts."})
+
         if request and request.user and request.user.is_authenticated and department:
             allowed_depts = get_user_scope_departments(request.user)
             if not allowed_depts.filter(id=department.id).exists():
                 raise serializers.ValidationError({"department": "You do not have permission to assign students to this department."})
+
 
         if department and level is not None:
             max_lvl = getattr(department, "max_level", 400)
@@ -165,10 +172,18 @@ class LecturerProfileSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"staff_id": f"Staff ID or identifier '{staff_clean}' is already registered."})
 
         department = attrs.get("department") if "department" in attrs else (instance.department if instance else None)
+
+        if request and request.user and request.user.is_authenticated:
+            req_user = request.user
+            if not (req_user.is_superuser or (req_user.is_staff and not hasattr(req_user, "admin_profile"))):
+                if hasattr(req_user, "admin_profile") and req_user.admin_profile.level != "department":
+                    raise serializers.ValidationError({"detail": "Only department level admins can create or manage lecturer accounts."})
+
         if request and request.user and request.user.is_authenticated and department:
             allowed_depts = get_user_scope_departments(request.user)
             if not allowed_depts.filter(id=department.id).exists():
                 raise serializers.ValidationError({"department": "You do not have permission to assign lecturers to this department."})
+
 
         return attrs
 
@@ -279,14 +294,16 @@ class AdminProfileSerializer(serializers.ModelSerializer):
                                 raise serializers.ValidationError({"scope_department": "Selected department does not belong to your assigned faculty scope."})
 
                     elif admin_prof.level == "school":
-                        if target_level == "school":
-                            raise serializers.ValidationError({"level": "School level admins cannot create or manage school level admin accounts."})
-                        if target_level == "faculty" and scope_fac:
+                        if target_level != "faculty":
+                            raise serializers.ValidationError({"level": "School level admins can only create or manage faculty level admin accounts."})
+                        if scope_fac:
                             if not admin_prof.scope_school or scope_fac.school_id != admin_prof.scope_school.id:
                                 raise serializers.ValidationError({"scope_faculty": "Selected faculty does not belong to your assigned school scope."})
-                        elif target_level == "department" and scope_dept:
-                            if not admin_prof.scope_school or scope_dept.faculty.school_id != admin_prof.scope_school.id:
-                                raise serializers.ValidationError({"scope_department": "Selected department does not belong to your assigned school scope."})
+
+                    elif admin_prof.level == "university":
+                        if target_level != "school":
+                            raise serializers.ValidationError({"level": "University level admins can only create or manage school level admin accounts."})
+
 
         return attrs
 
