@@ -87,3 +87,6 @@ class AuthenticationTests(APITestCase):
         profile_res2 = self.client.get(profile_url)
         self.assertEqual(profile_res2.status_code, status.HTTP_200_OK)
         self.assertEqual(profile_res2.data["profile"]["full_name"], "John Doe")
+        self.assertEqual(profile_res2.data["profile"]["department"], "Computer Science")
+        self.assertEqual(profile_res2.data["profile"]["department_id"], self.department.id)
+

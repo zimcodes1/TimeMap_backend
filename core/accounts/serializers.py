@@ -22,6 +22,13 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         model = Student
         fields = ("id", "user", "matric_number", "full_name", "department", "level", "is_class_rep", "email")
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.department:
+            data["department_id"] = instance.department.id
+            data["department"] = instance.department.name
+        return data
+
     def create(self, validated_data):
         matric_number = validated_data.get("matric_number", "").strip().upper()
         user, created = User.objects.get_or_create(
@@ -53,6 +60,13 @@ class LecturerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = LecturerStaff
         fields = ("id", "user", "staff_id", "full_name", "department", "email")
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.department:
+            data["department_id"] = instance.department.id
+            data["department"] = instance.department.name
+        return data
 
     def create(self, validated_data):
         staff_id = validated_data.get("staff_id", "").strip().upper()
@@ -95,6 +109,14 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             "scope_faculty",
             "scope_school",
         )
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.scope_department:
+            data["scope_department_id"] = instance.scope_department.id
+            data["scope_department"] = instance.scope_department.name
+            data["department"] = instance.scope_department.name
+        return data
 
     def create(self, validated_data):
         staff_id = validated_data.get("staff_id", "").strip().upper()
