@@ -14,6 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Course, CourseAccessGrant, CourseRegistration
+from .permissions import CanManageCourse, CanManageCourseGrant
 from .serializers import (
     CourseAccessGrantSerializer,
     CourseRegistrationSerializer,
@@ -24,29 +25,57 @@ from .services import get_visible_courses_for_student
 
 class CourseViewSet(viewsets.ModelViewSet):
     serializer_class = CourseSerializer
-    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+    permission_classes = [IsAuthenticated, IsPasswordResetDone, CanManageCourse]
 
     def get_queryset(self):
         user = self.request.user
         if user.role == "student" and hasattr(user, "student_profile"):
             return get_visible_courses_for_student(user.student_profile)
 
-        dept_qs = get_user_scope_departments(user)
-        fac_qs = get_user_scope_faculties(user)
-        sch_qs = get_user_scope_schools(user)
+        if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+            return Course.objects.all()
 
-        scope_filter = (
-            Q(owning_level=Course.OwningLevel.GENERAL)
-            | Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department__in=dept_qs)
-            | Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty__in=fac_qs)
-            | Q(owning_level=Course.OwningLevel.SCHOOL, owning_school__in=sch_qs)
-        )
-        return Course.objects.filter(scope_filter).distinct()
+        if user.role == "admin" and hasattr(user, "admin_profile"):
+            admin_prof = user.admin_profile
+            level = admin_prof.level
 
-    def get_permissions(self):
-        if self.action in ["create", "update", "partial_update", "destroy"]:
-            return [IsAuthenticated(), IsPasswordResetDone(), IsAdminUserRole()]
-        return super().get_permissions()
+            if level in ["university", "school"]:
+                # System level & School level can view all courses
+                return Course.objects.all()
+
+            elif level == "faculty":
+                if not admin_prof.scope_faculty:
+                    return Course.objects.none()
+
+                # Get IDs of courses granted to or requested by this faculty / departments in this faculty
+                granted_course_ids = CourseAccessGrant.objects.filter(
+                    Q(granted_to_faculty=admin_prof.scope_faculty)
+                    | Q(granted_to_department__faculty=admin_prof.scope_faculty)
+                    | Q(course__owning_faculty=admin_prof.scope_faculty)
+                    | Q(course__owning_department__faculty=admin_prof.scope_faculty)
+                ).values_list("course_id", flat=True)
+
+                return Course.objects.filter(
+                    Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty=admin_prof.scope_faculty)
+                    | Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department__faculty=admin_prof.scope_faculty)
+                    | Q(id__in=granted_course_ids)
+                ).distinct()
+
+            elif level == "department":
+                if not admin_prof.scope_department:
+                    return Course.objects.none()
+
+                granted_course_ids = CourseAccessGrant.objects.filter(
+                    Q(granted_to_department=admin_prof.scope_department)
+                    | Q(course__owning_department=admin_prof.scope_department)
+                ).values_list("course_id", flat=True)
+
+                return Course.objects.filter(
+                    Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department=admin_prof.scope_department)
+                    | Q(id__in=granted_course_ids)
+                ).distinct()
+
+        return Course.objects.none()
 
     @extend_schema(summary="Get courses visible to authenticated student", responses={200: CourseSerializer(many=True)})
     @action(detail=False, methods=["get"], url_path="visible-to-me")
@@ -60,22 +89,19 @@ class CourseViewSet(viewsets.ModelViewSet):
 
 class CourseAccessGrantViewSet(viewsets.ModelViewSet):
     serializer_class = CourseAccessGrantSerializer
-    permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole]
+    permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole, CanManageCourseGrant]
 
     def get_queryset(self):
         user = self.request.user
         dept_qs = get_user_scope_departments(user)
         fac_qs = get_user_scope_faculties(user)
-        sch_qs = get_user_scope_schools(user)
 
         # Access grants related to course owner side or granted recipient side
         return CourseAccessGrant.objects.filter(
             Q(course__owning_department__in=dept_qs)
             | Q(course__owning_faculty__in=fac_qs)
-            | Q(course__owning_school__in=sch_qs)
             | Q(granted_to_department__in=dept_qs)
             | Q(granted_to_faculty__in=fac_qs)
-            | Q(granted_to_school__in=sch_qs)
         ).distinct()
 
     def perform_create(self, serializer):

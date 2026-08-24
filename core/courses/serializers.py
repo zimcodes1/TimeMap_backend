@@ -43,10 +43,10 @@ class CourseSerializer(serializers.ModelSerializer):
             return attrs
 
         user = request.user
-        owning_level = attrs.get("owning_level")
-        owning_dept = attrs.get("owning_department")
-        owning_fac = attrs.get("owning_faculty")
-        owning_sch = attrs.get("owning_school")
+        owning_level = attrs.get("owning_level", self.instance.owning_level if self.instance else None)
+        owning_dept = attrs.get("owning_department", self.instance.owning_department if self.instance else None)
+        owning_fac = attrs.get("owning_faculty", self.instance.owning_faculty if self.instance else None)
+        owning_sch = attrs.get("owning_school", self.instance.owning_school if self.instance else None)
 
         # Validate that only matching ownership field is set
         if owning_level == Course.OwningLevel.DEPARTMENT and not owning_dept:
@@ -59,14 +59,26 @@ class CourseSerializer(serializers.ModelSerializer):
         # Creation-time ownership guardrails based on requesting admin's level
         if user.role == "admin" and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
-            if admin_prof.level == "department":
-                if admin_prof.scope_department and (owning_level != Course.OwningLevel.DEPARTMENT or owning_dept != admin_prof.scope_department):
-                    raise serializers.ValidationError("Department admins can only create department-owned courses for their own department.")
+            if admin_prof.level == "university":
+                raise serializers.ValidationError("University level admins have view-only access and cannot create or edit courses.")
+
+            elif admin_prof.level == "school":
+                if owning_level != Course.OwningLevel.SCHOOL:
+                    raise serializers.ValidationError({"owning_level": "School level admins can only create school-owned courses."})
+                if admin_prof.scope_school and owning_sch != admin_prof.scope_school:
+                    raise serializers.ValidationError({"owning_school": "School level admins can only create courses for their assigned school scope."})
+
             elif admin_prof.level == "faculty":
-                if owning_level in [Course.OwningLevel.SCHOOL, Course.OwningLevel.GENERAL]:
-                    raise serializers.ValidationError("Faculty admins cannot create school-level or general courses.")
-                if admin_prof.scope_faculty and owning_level == Course.OwningLevel.FACULTY and owning_fac != admin_prof.scope_faculty:
-                    raise serializers.ValidationError("Faculty admins can only create faculty-owned courses for their own faculty.")
+                if owning_level != Course.OwningLevel.FACULTY:
+                    raise serializers.ValidationError({"owning_level": "Faculty level admins can only create faculty-owned courses."})
+                if admin_prof.scope_faculty and owning_fac != admin_prof.scope_faculty:
+                    raise serializers.ValidationError({"owning_faculty": "Faculty level admins can only create courses for their assigned faculty scope."})
+
+            elif admin_prof.level == "department":
+                if owning_level != Course.OwningLevel.DEPARTMENT:
+                    raise serializers.ValidationError({"owning_level": "Department admins can only create department-owned courses."})
+                if admin_prof.scope_department and owning_dept != admin_prof.scope_department:
+                    raise serializers.ValidationError({"owning_department": "Department admins can only create courses for their assigned department scope."})
 
         return attrs
 
