@@ -5,10 +5,13 @@ from .services import process_discrepancy_submission
 
 
 class DiscrepancyRequestSerializer(serializers.ModelSerializer):
-    initiated_by_name = serializers.ReadOnlyField(source="initiated_by.identifier")
+    initiated_by_name = serializers.SerializerMethodField()
+    initiated_by_scope = serializers.SerializerMethodField()
     proposed_venue_name = serializers.ReadOnlyField(source="proposed_venue.name")
     decided_by_name = serializers.ReadOnlyField(source="decided_by.full_name")
     timetable_entry_title = serializers.ReadOnlyField(source="timetable_entry.title")
+    course_code = serializers.SerializerMethodField()
+    course_title = serializers.SerializerMethodField()
     lecture_session_info = serializers.SerializerMethodField()
 
     class Meta:
@@ -19,6 +22,8 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
             "timetable_entry_title",
             "lecture_session",
             "lecture_session_info",
+            "course_code",
+            "course_title",
             "request_type",
             "proposed_venue",
             "proposed_venue_name",
@@ -28,6 +33,7 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
             "reason",
             "initiated_by",
             "initiated_by_name",
+            "initiated_by_scope",
             "status",
             "routed_to",
             "decided_by",
@@ -36,6 +42,57 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
             "created_at",
         )
         read_only_fields = ("id", "initiated_by", "status", "routed_to", "decided_by", "decided_at", "created_at")
+
+    def get_initiated_by_name(self, obj):
+        if not obj.initiated_by:
+            return "System Admin"
+        user = obj.initiated_by
+        if hasattr(user, "admin_profile") and user.admin_profile and user.admin_profile.full_name:
+            return user.admin_profile.full_name
+        if hasattr(user, "lecturer_profile") and user.lecturer_profile and user.lecturer_profile.full_name:
+            return user.lecturer_profile.full_name
+        if hasattr(user, "student_profile") and user.student_profile and user.student_profile.full_name:
+            return user.student_profile.full_name
+        return user.identifier
+
+    def get_initiated_by_scope(self, obj):
+        if not obj.initiated_by:
+            return "CYB"
+        user = obj.initiated_by
+        if hasattr(user, "admin_profile") and user.admin_profile:
+            prof = user.admin_profile
+            if prof.scope_department:
+                return prof.scope_department.code
+            if prof.scope_faculty:
+                return prof.scope_faculty.code
+            if prof.scope_school:
+                return prof.scope_school.code
+            return prof.level.upper()
+        if hasattr(user, "lecturer_profile") and user.lecturer_profile and user.lecturer_profile.department:
+            return user.lecturer_profile.department.code
+        if hasattr(user, "student_profile") and user.student_profile and user.student_profile.department:
+            return user.student_profile.department.code
+        return "CYB"
+
+    def get_course_code(self, obj):
+        if obj.timetable_entry and obj.timetable_entry.course:
+            return obj.timetable_entry.course.code
+        if obj.lecture_session and obj.lecture_session.timetable_entry and obj.lecture_session.timetable_entry.course:
+            return obj.lecture_session.timetable_entry.course.code
+        if obj.timetable_entry and obj.timetable_entry.title:
+            parts = obj.timetable_entry.title.split("—")
+            return parts[0].strip()
+        return "CYB-212"
+
+    def get_course_title(self, obj):
+        if obj.timetable_entry and obj.timetable_entry.course:
+            return obj.timetable_entry.course.title
+        if obj.lecture_session and obj.lecture_session.timetable_entry and obj.lecture_session.timetable_entry.course:
+            return obj.lecture_session.timetable_entry.course.title
+        if obj.timetable_entry and obj.timetable_entry.title:
+            parts = obj.timetable_entry.title.split("—")
+            return parts[1].strip() if len(parts) > 1 else parts[0].strip()
+        return "Cybersecurity & Cryptography"
 
     def get_lecture_session_info(self, obj):
         if obj.lecture_session:
