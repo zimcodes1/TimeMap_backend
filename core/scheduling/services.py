@@ -24,17 +24,19 @@ def parse_target_weekdays(rule_str):
 
     rule_clean = rule_str.strip().lower()
     if ":" in rule_clean:
-        _, day_part = rule_clean.split(":", 1)
+        parts = rule_clean.split(":")
+        day_part = parts[-1]
     else:
         day_part = rule_clean
 
-    tokens = [t.strip() for t in day_part.replace("on", "").replace("every", "").split(",")]
     target_days = set()
-    for token in tokens:
-        for key, val in WEEKDAY_MAP.items():
-            if key in token:
-                target_days.add(val)
-                break
+    for token in day_part.split(","):
+        token = token.strip()
+        for word in token.split():
+            for key, val in WEEKDAY_MAP.items():
+                if key == word or (len(key) >= 3 and key in word):
+                    target_days.add(val)
+                    break
     return target_days
 
 

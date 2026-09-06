@@ -39,9 +39,29 @@ class CourseViewSet(viewsets.ModelViewSet):
             admin_prof = user.admin_profile
             level = admin_prof.level
 
-            if level in ["university", "school"]:
-                # System level & School level can view all courses
+            if level == "university":
+                # System level can view all courses
                 return Course.objects.all()
+
+            elif level == "school":
+                if not admin_prof.scope_school:
+                    return Course.objects.none()
+
+                granted_course_ids = CourseAccessGrant.objects.filter(
+                    Q(granted_to_school=admin_prof.scope_school)
+                    | Q(granted_to_faculty__school=admin_prof.scope_school)
+                    | Q(granted_to_department__faculty__school=admin_prof.scope_school)
+                    | Q(course__owning_school=admin_prof.scope_school)
+                    | Q(course__owning_faculty__school=admin_prof.scope_school)
+                    | Q(course__owning_department__faculty__school=admin_prof.scope_school)
+                ).values_list("course_id", flat=True)
+
+                return Course.objects.filter(
+                    Q(owning_level=Course.OwningLevel.SCHOOL, owning_school=admin_prof.scope_school)
+                    | Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty__school=admin_prof.scope_school)
+                    | Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department__faculty__school=admin_prof.scope_school)
+                    | Q(id__in=granted_course_ids)
+                ).distinct()
 
             elif level == "faculty":
                 if not admin_prof.scope_faculty:

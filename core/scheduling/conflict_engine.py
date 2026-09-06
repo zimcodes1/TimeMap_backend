@@ -341,21 +341,29 @@ def determine_booking_routing(
         all_conflicts.extend(lecturer_conflicts)
 
     # Resolve outcome
+    admin_prof = user.admin_profile if user and hasattr(user, "admin_profile") else None
+
     if not has_scope:
-        # Route to venue's owning admin
+        # Route to venue's owning admin or faculty admin
         owning_admin = None
         if venue.owning_level == Venue.OwningLevel.DEPARTMENT and venue.owning_department:
             owning_admin = AdminOfficer.objects.filter(level="department", scope_department=venue.owning_department).first()
+            if not owning_admin and venue.owning_department.faculty:
+                owning_admin = AdminOfficer.objects.filter(level="faculty", scope_faculty=venue.owning_department.faculty).first()
         elif venue.owning_level == Venue.OwningLevel.FACULTY and venue.owning_faculty:
             owning_admin = AdminOfficer.objects.filter(level="faculty", scope_faculty=venue.owning_faculty).first()
         elif venue.owning_level == Venue.OwningLevel.SCHOOL and venue.owning_school:
             owning_admin = AdminOfficer.objects.filter(level="school", scope_school=venue.owning_school).first()
 
+        # Fallback to any faculty admin if specific scope admin is unassigned
+        if not owning_admin and venue.owning_faculty:
+            owning_admin = AdminOfficer.objects.filter(level="faculty", scope_faculty=venue.owning_faculty).first()
+
         return {
             "outcome": "ROUTE_APPROVAL",
-            "routed_to_admin_id": owning_admin.id if owning_admin else None,
+            "routed_to_admin_id": owning_admin.id if owning_admin else (admin_prof.id if admin_prof else None),
             "conflicts": all_conflicts,
-            "message": "Booking touches a venue outside your direct scope and has been routed for approval.",
+            "message": "Booking touches a venue outside your direct scope and has been routed to the corresponding Faculty/Scope Admin Officer for approval.",
         }
 
     if all_conflicts:
@@ -367,6 +375,7 @@ def determine_booking_routing(
 
     return {
         "outcome": "PROCEED",
+        "routed_to_admin_id": admin_prof.id if admin_prof else None,
         "conflicts": [],
-        "message": "No conflicts detected. Booking permitted.",
+        "message": "No conflicts detected. Request routed to same-level admin for approval.",
     }

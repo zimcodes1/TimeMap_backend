@@ -110,9 +110,15 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(session_date__gte=date.today())
         else:
             dept_qs = get_user_scope_departments(user)
+            fac_qs = get_user_scope_faculties(user)
+            sch_qs = get_user_scope_schools(user)
             qs = LectureSession.objects.filter(
                 Q(timetable_entry__course__owning_department__in=dept_qs)
+                | Q(timetable_entry__course__owning_faculty__in=fac_qs)
+                | Q(timetable_entry__course__owning_school__in=sch_qs)
                 | Q(venue__owning_department__in=dept_qs)
+                | Q(venue__owning_faculty__in=fac_qs)
+                | Q(venue__owning_school__in=sch_qs)
             ).distinct()
 
         # Query parameters filters
@@ -131,6 +137,90 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(status=status_param)
 
         return qs.order_by("session_date", "session_start_time")
+
+    def get_permissions(self):
+        if self.action in ["update", "partial_update", "destroy"]:
+            return [IsAuthenticated(), IsPasswordResetDone(), IsAdminUserRole()]
+        return super().get_permissions()
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        session = self.get_object()
+
+        # Check jurisdiction: creator admin or superuser
+        admin_profile = getattr(request.user, "admin_profile", None)
+        is_originating_admin = (
+            admin_profile is not None
+            and session.timetable_entry.created_by_id == admin_profile.id
+        )
+        if not (is_originating_admin or request.user.is_superuser):
+            return Response(
+                {
+                    "detail": "Only the originating admin who created this schedule has jurisdiction to shift this session instance."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = self.get_serializer(session, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        target_venue = serializer.validated_data.get("venue", session.venue)
+        target_date = serializer.validated_data.get("session_date", session.session_date)
+        target_start = serializer.validated_data.get("session_start_time", session.session_start_time)
+        target_end = serializer.validated_data.get("session_end_time", session.session_end_time)
+
+        # Check clash if venue, date, or time is being modified
+        if (
+            target_venue != session.venue
+            or target_date != session.session_date
+            or target_start != session.session_start_time
+            or target_end != session.session_end_time
+        ):
+            from .conflict_engine import check_venue_overlap
+
+            conflicts = check_venue_overlap(
+                venue=target_venue,
+                date=target_date,
+                start_time=target_start,
+                end_time=target_end,
+                exclude_session_id=session.id,
+            )
+            if conflicts:
+                return Response(
+                    {
+                        "detail": "Proposed venue and time conflict with an existing booking.",
+                        "conflicts": conflicts,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if "status" not in serializer.validated_data:
+                serializer.validated_data["status"] = LectureSession.Status.SHIFTED
+
+        updated_session = serializer.save()
+
+        # Dispatch SESSION_SHIFTED notification
+        if updated_session.status == LectureSession.Status.SHIFTED:
+            try:
+                from notifications.models import Notification
+                from notifications.services import dispatch_event_notification
+
+                course = updated_session.timetable_entry.course
+                if course:
+                    for lecturer in course.lecturers.all():
+                        dispatch_event_notification(
+                            recipient=lecturer.user,
+                            notification_type=Notification.NotificationType.SESSION_SHIFTED,
+                            title=f"Session Shifted: {course.code}",
+                            body=f"Session for {course.code} on {updated_session.session_date} was shifted to {updated_session.venue.name} ({updated_session.session_start_time.strftime('%H:%M')} - {updated_session.session_end_time.strftime('%H:%M')}).",
+                            related_model="LectureSession",
+                            related_id=updated_session.id,
+                        )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to dispatch session shift notification: {e}")
+
+        return Response(serializer.data)
 
 
 class ExamSittingViewSet(viewsets.ModelViewSet):

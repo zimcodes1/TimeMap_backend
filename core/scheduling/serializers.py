@@ -115,6 +115,8 @@ class LectureSessionSerializer(serializers.ModelSerializer):
     course_title = serializers.ReadOnlyField(source="timetable_entry.course.title")
     department_name = serializers.ReadOnlyField(source="timetable_entry.course.owning_department.name")
     venue_name = serializers.ReadOnlyField(source="venue.name")
+    can_shift = serializers.SerializerMethodField()
+    report_status = serializers.SerializerMethodField()
 
     class Meta:
         model = LectureSession
@@ -131,8 +133,29 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "venue",
             "venue_name",
             "status",
+            "can_shift",
+            "report_status",
         )
         read_only_fields = ("id",)
+
+    def get_can_shift(self, obj) -> bool:
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return False
+        user = request.user
+        if user.is_superuser:
+            return True
+        admin_profile = getattr(user, "admin_profile", None)
+        if not admin_profile:
+            return False
+        return obj.timetable_entry.created_by_id == admin_profile.id
+
+    def get_report_status(self, obj) -> str:
+        try:
+            report = obj.report
+            return "held" if report.held else "not_held"
+        except Exception:
+            return "unreported"
 
 
 class ExamSittingSerializer(serializers.ModelSerializer):

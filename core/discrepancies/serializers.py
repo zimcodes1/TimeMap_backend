@@ -7,12 +7,18 @@ from .services import process_discrepancy_submission
 class DiscrepancyRequestSerializer(serializers.ModelSerializer):
     initiated_by_name = serializers.SerializerMethodField()
     initiated_by_scope = serializers.SerializerMethodField()
+    initiated_by_role = serializers.SerializerMethodField()
     proposed_venue_name = serializers.ReadOnlyField(source="proposed_venue.name")
     decided_by_name = serializers.ReadOnlyField(source="decided_by.full_name")
     timetable_entry_title = serializers.ReadOnlyField(source="timetable_entry.title")
     course_code = serializers.SerializerMethodField()
     course_title = serializers.SerializerMethodField()
     lecture_session_info = serializers.SerializerMethodField()
+    can_withdraw = serializers.SerializerMethodField()
+    can_approve = serializers.SerializerMethodField()
+    can_reject = serializers.SerializerMethodField()
+    department_id = serializers.SerializerMethodField()
+    department_name = serializers.SerializerMethodField()
 
     class Meta:
         model = DiscrepancyRequest
@@ -34,12 +40,18 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
             "initiated_by",
             "initiated_by_name",
             "initiated_by_scope",
+            "initiated_by_role",
+            "department_id",
+            "department_name",
             "status",
             "routed_to",
             "decided_by",
             "decided_by_name",
             "decided_at",
             "created_at",
+            "can_withdraw",
+            "can_approve",
+            "can_reject",
         )
         read_only_fields = ("id", "initiated_by", "status", "routed_to", "decided_by", "decided_at", "created_at")
 
@@ -54,6 +66,18 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
         if hasattr(user, "student_profile") and user.student_profile and user.student_profile.full_name:
             return user.student_profile.full_name
         return user.identifier
+
+    def get_initiated_by_role(self, obj):
+        if not obj.initiated_by:
+            return ""
+        user = obj.initiated_by
+        if user.role == "admin" and hasattr(user, "admin_profile") and user.admin_profile:
+            return f"{user.admin_profile.level.capitalize()} Admin"
+        if user.role == "lecturer" and hasattr(user, "lecturer_profile") and user.lecturer_profile:
+            return "Lecturer"
+        if user.role == "student" and hasattr(user, "student_profile") and user.student_profile:
+            return "Student"
+        return user.role.capitalize()
 
     def get_initiated_by_scope(self, obj):
         if not obj.initiated_by:
@@ -97,6 +121,45 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
     def get_lecture_session_info(self, obj):
         if obj.lecture_session:
             return f"Session #{obj.lecture_session.id} on {obj.lecture_session.session_date}"
+        return None
+
+    def get_can_withdraw(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        return obj.initiated_by_id == request.user.id and obj.status == DiscrepancyRequest.Status.PENDING
+
+    def get_can_approve(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.role != "admin" or not hasattr(request.user, "admin_profile"):
+            return False
+        return obj.status == DiscrepancyRequest.Status.PENDING and obj.routed_to_id == request.user.admin_profile.id
+
+    def get_can_reject(self, obj):
+        return self.get_can_approve(obj)
+
+    def get_department_id(self, obj):
+        if obj.timetable_entry and obj.timetable_entry.course and obj.timetable_entry.course.owning_department_id:
+            return obj.timetable_entry.course.owning_department_id
+        if obj.lecture_session and obj.lecture_session.timetable_entry and obj.lecture_session.timetable_entry.course and obj.lecture_session.timetable_entry.course.owning_department_id:
+            return obj.lecture_session.timetable_entry.course.owning_department_id
+        if obj.proposed_venue and obj.proposed_venue.owning_department_id:
+            return obj.proposed_venue.owning_department_id
+        if obj.initiated_by and hasattr(obj.initiated_by, "admin_profile") and obj.initiated_by.admin_profile and obj.initiated_by.admin_profile.scope_department_id:
+            return obj.initiated_by.admin_profile.scope_department_id
+        return None
+
+    def get_department_name(self, obj):
+        if obj.timetable_entry and obj.timetable_entry.course and obj.timetable_entry.course.owning_department:
+            return obj.timetable_entry.course.owning_department.name
+        if obj.lecture_session and obj.lecture_session.timetable_entry and obj.lecture_session.timetable_entry.course and obj.lecture_session.timetable_entry.course.owning_department:
+            return obj.lecture_session.timetable_entry.course.owning_department.name
+        if obj.proposed_venue and obj.proposed_venue.owning_department:
+            return obj.proposed_venue.owning_department.name
+        if obj.initiated_by and hasattr(obj.initiated_by, "admin_profile") and obj.initiated_by.admin_profile and obj.initiated_by.admin_profile.scope_department:
+            return obj.initiated_by.admin_profile.scope_department.name
         return None
 
     def create(self, validated_data):
