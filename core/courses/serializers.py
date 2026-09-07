@@ -34,6 +34,29 @@ class CourseSerializer(serializers.ModelSerializer):
     def get_registration_count(self, obj):
         return obj.student_registrations.count()
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.owning_department:
+            dept = instance.owning_department
+            if dept.faculty:
+                if not data.get("owning_faculty"):
+                    data["owning_faculty"] = dept.faculty.id
+                if not data.get("owning_faculty_name"):
+                    data["owning_faculty_name"] = dept.faculty.name
+                if dept.faculty.school:
+                    if not data.get("owning_school"):
+                        data["owning_school"] = dept.faculty.school.id
+                    if not data.get("owning_school_name"):
+                        data["owning_school_name"] = dept.faculty.school.name
+        elif instance.owning_faculty:
+            fac = instance.owning_faculty
+            if fac.school:
+                if not data.get("owning_school"):
+                    data["owning_school"] = fac.school.id
+                if not data.get("owning_school_name"):
+                    data["owning_school_name"] = fac.school.name
+        return data
+
     def validate_code(self, value):
         return value.strip().upper()
 
