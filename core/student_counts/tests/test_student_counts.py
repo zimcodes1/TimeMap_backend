@@ -56,3 +56,41 @@ class DepartmentStudentCountTests(APITestCase):
 
         denied = self.client.patch("/api/student-counts/departments/1/", {"count": 1}, format="json")
         self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_school_and_university_admin_analytics_dimensions(self):
+        DepartmentStudentCount.objects.create(department=self.department, level=200, count=240)
+        DepartmentStudentCount.objects.create(department=self.other_department, level=200, count=180)
+
+        # School admin
+        school_user = User.objects.create_user(
+            identifier="SCH", password="password", role="admin", requires_password_reset=False
+        )
+        AdminOfficer.objects.create(
+            user=school_user, staff_id="SCH", full_name="School Admin",
+            level="school", scope_school=self.faculty.school,
+        )
+        self.client.force_authenticate(school_user)
+        school_res = self.client.get("/api/student-counts/departments/analytics/")
+        self.assertEqual(school_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(school_res.data["available_dimensions"], ["level", "faculty"])
+        self.assertEqual(school_res.data["by_department"], [])
+        self.assertEqual(school_res.data["by_school"], [])
+        self.assertEqual(len(school_res.data["by_faculty"]), 1)
+        self.assertEqual(school_res.data["summary"]["faculties_reporting"], 1)
+
+        # University admin
+        uni_user = User.objects.create_user(
+            identifier="UNI", password="password", role="admin", requires_password_reset=False
+        )
+        AdminOfficer.objects.create(
+            user=uni_user, staff_id="UNI", full_name="University Admin",
+            level="university",
+        )
+        self.client.force_authenticate(uni_user)
+        uni_res = self.client.get("/api/student-counts/departments/analytics/")
+        self.assertEqual(uni_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(uni_res.data["available_dimensions"], ["level", "school"])
+        self.assertEqual(uni_res.data["by_department"], [])
+        self.assertEqual(uni_res.data["by_faculty"], [])
+        self.assertEqual(len(uni_res.data["by_school"]), 1)
+        self.assertEqual(uni_res.data["summary"]["schools_reporting"], 1)
