@@ -700,7 +700,29 @@ Read-only aggregation endpoints for administrative metrics, scoped strictly to t
 
 ---
 
-## 12. Dedicated Role-Based Analytics Endpoints (`/api/analytics/`)
+## 12. Student Planning Totals (`/api/student-counts/`)
+
+Student population planning is intentionally separate from individual `Student` accounts. A department administrator records one total for each academic level in their department (for example, 100L or 300L). These totals are the intended input for future timetable-generation capacity planning.
+
+* **List / create**: `GET`, `POST /api/student-counts/departments/`
+* **Detail / update**: `GET`, `PATCH /api/student-counts/departments/{id}/`
+* **Analytics**: `GET /api/student-counts/departments/analytics/`
+* **Filters**: `department_id`, `faculty_id`, `school_id`, `level`
+* **Access**: Department admins may create/update only records in their assigned department. Faculty, school, and university admins have read-only, scope-filtered access.
+
+```json
+{
+  "department": 1,
+  "level": 300,
+  "count": 184
+}
+```
+
+The analytics endpoint returns total students plus chart-ready rollups by department, faculty, school, and academic level.
+
+---
+
+## 13. Dedicated Role-Based Analytics Endpoints (`/api/analytics/`)
 
 Delivers role-constrained lecture hold analytics for Class Representatives, Lecturers, and Admins.
 
@@ -837,8 +859,6 @@ Delivers role-constrained lecture hold analytics for Class Representatives, Lect
 * **Swagger UI**: `http://localhost:8000/api/docs/swagger/`
 * **ReDoc UI**: `http://localhost:8000/api/docs/redoc/`
 * **OpenAPI 3.0 Schema (JSON)**: `http://localhost:8000/api/schema/`
-
-
 
 
 

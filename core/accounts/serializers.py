@@ -62,6 +62,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         instance = self.instance
         current_user_id = instance.user_id if instance else None
         request = self.context.get("request")
+        is_class_rep = attrs.get("is_class_rep") if "is_class_rep" in attrs else (instance.is_class_rep if instance else False)
 
         # 1. Email Uniqueness
         email = attrs.get("email") if "email" in attrs else (instance.email if instance else None)
@@ -87,6 +88,8 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             if not (req_user.is_superuser or (req_user.is_staff and not hasattr(req_user, "admin_profile"))):
                 if hasattr(req_user, "admin_profile") and req_user.admin_profile.level != "department":
                     raise serializers.ValidationError({"detail": "Only department level admins can create or manage student accounts."})
+                if hasattr(req_user, "admin_profile") and not is_class_rep:
+                    raise serializers.ValidationError({"is_class_rep": "Administrators may only create and manage class representative accounts. Department totals belong on the Students page."})
 
         if request and request.user and request.user.is_authenticated and department:
             allowed_depts = get_user_scope_departments(request.user)
@@ -102,7 +105,6 @@ class StudentProfileSerializer(serializers.ModelSerializer):
                 })
 
         # 4. Class Rep Restriction (Max 2 per Department & Level)
-        is_class_rep = attrs.get("is_class_rep") if "is_class_rep" in attrs else (instance.is_class_rep if instance else False)
         if is_class_rep and department and level is not None:
             reps_qs = Student.objects.filter(department=department, level=level, is_class_rep=True)
             if instance:

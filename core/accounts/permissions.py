@@ -166,7 +166,10 @@ def get_user_scope_students(user):
         admin_prof = user.admin_profile
         if admin_prof.level == "department":
             if admin_prof.scope_department:
-                return Student.objects.filter(department=admin_prof.scope_department)
+                return Student.objects.filter(
+                    department=admin_prof.scope_department,
+                    is_class_rep=True,
+                )
             return Student.objects.none()
         # Faculty, school, university admins do NOT manage students directly.
         return Student.objects.none()

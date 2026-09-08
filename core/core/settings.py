@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     "notifications",
     "calendars",
     "analytics",
+    "student_counts",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

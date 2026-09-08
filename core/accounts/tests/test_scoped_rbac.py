@@ -95,14 +95,14 @@ class ScopedRBACPermissionsTests(APITestCase):
             level=AdminOfficer.Level.DEPARTMENT, scope_department=self.dept3,
         )
 
-        # ── Students & Lecturers ───────────────────────────────────────────
+        # ── Class Representatives & Lecturers ─────────────────────────────
         self.s1_user = User.objects.create_user(
             identifier="STU1", password="password",
             role=User.Role.STUDENT, requires_password_reset=False,
         )
         self.student1 = Student.objects.create(
             user=self.s1_user, matric_number="STU1",
-            full_name="Student 1", department=self.dept1, level=100,
+            full_name="Class Rep 1", department=self.dept1, level=100, is_class_rep=True,
         )
 
         self.s3_user = User.objects.create_user(
@@ -111,7 +111,7 @@ class ScopedRBACPermissionsTests(APITestCase):
         )
         self.student3 = Student.objects.create(
             user=self.s3_user, matric_number="STU3",
-            full_name="Student 3", department=self.dept3, level=100,
+            full_name="Class Rep 3", department=self.dept3, level=100, is_class_rep=True,
         )
 
         self.l1_user = User.objects.create_user(
@@ -255,10 +255,10 @@ class ScopedRBACPermissionsTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("detail", res.data)
 
-    # ── Student / Lecturer Visibility ──────────────────────────────────────
+    # ── Class Representative / Lecturer Visibility ─────────────────────────
 
     def test_dept_admin_sees_only_students_in_their_dept(self):
-        """Department Admin sees students from their department only."""
+        """Department Admin sees class representatives from their department only."""
         self.client.force_authenticate(user=self.dept1_user)
         res = self.client.get(reverse("student-list"))
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -318,12 +318,12 @@ class ScopedRBACPermissionsTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_dept_admin_cannot_create_student_in_another_dept(self):
-        """Department Admin gets HTTP 400 attempting to enroll a student in another dept."""
+        """Department Admin gets HTTP 400 attempting to register a class rep in another dept."""
         self.client.force_authenticate(user=self.dept1_user)
         res = self.client.post(
             reverse("student-list"),
-            {"matric_number": "BAD001", "full_name": "Bad Student",
-             "department": self.dept3.id, "level": 100},
+            {"matric_number": "BAD001", "full_name": "Bad Class Rep",
+             "department": self.dept3.id, "level": 100, "is_class_rep": True},
             format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)

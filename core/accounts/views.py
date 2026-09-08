@@ -124,7 +124,7 @@ class BaseUserViewSet(viewsets.ModelViewSet):
 
 class StudentViewSet(BaseUserViewSet):
     serializer_class = StudentProfileSerializer
-    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+    permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole]
 
     def get_queryset(self):
         return get_user_scope_students(self.request.user).exclude(user=self.request.user)
