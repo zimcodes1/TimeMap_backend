@@ -124,6 +124,12 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
                 Q(course__target_program_id=program_param)
                 | Q(course__program_scope="general")
             )
+        level_param = self.request.query_params.get("level")
+        if level_param:
+            qs = qs.filter(course__level=level_param)
+        entry_type_param = self.request.query_params.get("entry_type")
+        if entry_type_param:
+            qs = qs.filter(entry_type=entry_type_param)
         return qs
 
     def get_permissions(self):
@@ -203,6 +209,8 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
         status_param = self.request.query_params.get("status")
         semester_param = self.request.query_params.get("semester")
         program_param = self.request.query_params.get("program")
+        level_param = self.request.query_params.get("level")
+        entry_type_param = self.request.query_params.get("entry_type")
 
         if session_date:
             qs = qs.filter(session_date=session_date)
@@ -219,6 +227,10 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
                 Q(timetable_entry__course__target_program_id=program_param)
                 | Q(timetable_entry__course__program_scope="general")
             )
+        if level_param:
+            qs = qs.filter(timetable_entry__course__level=level_param)
+        if entry_type_param:
+            qs = qs.filter(timetable_entry__entry_type=entry_type_param)
 
         return qs.order_by("session_date", "session_start_time")
 

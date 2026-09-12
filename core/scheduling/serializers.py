@@ -84,6 +84,10 @@ class AcademicSessionSerializer(serializers.ModelSerializer):
 
 class TimetableEntrySerializer(serializers.ModelSerializer):
     course_code = serializers.ReadOnlyField(source="course.code")
+    course_level = serializers.ReadOnlyField(source="course.level")
+    target_program_id = serializers.ReadOnlyField(source="course.target_program_id")
+    target_program_name = serializers.ReadOnlyField(source="course.target_program.name")
+    program_scope = serializers.ReadOnlyField(source="course.program_scope")
     venue_name = serializers.ReadOnlyField(source="venue.name")
     created_by_name = serializers.ReadOnlyField(source="created_by.full_name")
     semester_name = serializers.ReadOnlyField(source="semester.get_name_display")
@@ -97,6 +101,10 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             "title",
             "course",
             "course_code",
+            "course_level",
+            "target_program_id",
+            "target_program_name",
+            "program_scope",
             "venue",
             "venue_name",
             "start_time",
@@ -194,9 +202,12 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
 
 class LectureSessionSerializer(serializers.ModelSerializer):
     timetable_entry_title = serializers.ReadOnlyField(source="timetable_entry.title")
+    entry_type = serializers.ReadOnlyField(source="timetable_entry.entry_type")
     course_code = serializers.ReadOnlyField(source="timetable_entry.course.code")
     course_title = serializers.ReadOnlyField(source="timetable_entry.course.title")
+    course_level = serializers.ReadOnlyField(source="timetable_entry.course.level")
     department_name = serializers.ReadOnlyField(source="timetable_entry.course.owning_department.name")
+    target_program_id = serializers.ReadOnlyField(source="timetable_entry.course.target_program_id")
     program_name = serializers.ReadOnlyField(source="timetable_entry.course.target_program.name")
     program_code = serializers.ReadOnlyField(source="timetable_entry.course.target_program.code")
     program_scope = serializers.ReadOnlyField(source="timetable_entry.course.program_scope")
@@ -210,9 +221,12 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "id",
             "timetable_entry",
             "timetable_entry_title",
+            "entry_type",
             "course_code",
             "course_title",
+            "course_level",
             "department_name",
+            "target_program_id",
             "program_name",
             "program_code",
             "program_scope",
