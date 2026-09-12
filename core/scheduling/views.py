@@ -13,13 +13,77 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import ExamSitting, LectureSession, TimetableEntry
+from .models import AcademicSession, ExamSitting, LectureSession, Semester, TimetableEntry
+from .permissions import CanManageSessionAndSemester
 from .serializers import (
+    AcademicSessionSerializer,
     ExamSittingSerializer,
     LectureSessionSerializer,
+    SemesterSerializer,
     TimetableEntrySerializer,
 )
 from .services import materialize_timetable_entry
+
+
+class AcademicSessionViewSet(viewsets.ModelViewSet):
+    serializer_class = AcademicSessionSerializer
+    permission_classes = [IsAuthenticated, IsPasswordResetDone, CanManageSessionAndSemester]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = AcademicSession.objects.select_related("school").prefetch_related("semesters")
+        if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+            pass
+        else:
+            qs = qs.filter(school__in=get_user_scope_schools(user))
+
+        school_id = self.request.query_params.get("school")
+        if school_id:
+            qs = qs.filter(school_id=school_id)
+        is_current = self.request.query_params.get("is_current")
+        if is_current is not None:
+            qs = qs.filter(is_current=is_current.lower() in ["true", "1"])
+        return qs.order_by("-start_date")
+
+
+class SemesterViewSet(viewsets.ModelViewSet):
+    serializer_class = SemesterSerializer
+    permission_classes = [IsAuthenticated, IsPasswordResetDone, CanManageSessionAndSemester]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Semester.objects.select_related("session__school", "created_by")
+        if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+            pass
+        else:
+            qs = qs.filter(session__school__in=get_user_scope_schools(user))
+
+        session_id = self.request.query_params.get("session")
+        if session_id:
+            qs = qs.filter(session_id=session_id)
+        school_id = self.request.query_params.get("school")
+        if school_id:
+            qs = qs.filter(session__school_id=school_id)
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active.lower() in ["true", "1"])
+        return qs.order_by("-start_date")
+
+    def perform_create(self, serializer):
+        admin_prof = getattr(self.request.user, "admin_profile", None)
+        serializer.save(created_by=admin_prof)
+
+    @extend_schema(summary="Activate this semester for the school", responses={200: SemesterSerializer})
+    @action(detail=True, methods=["post"], url_path="activate")
+    def activate(self, request, pk=None):
+        semester = self.get_object()
+        school = semester.session.school
+        # Deactivate any other semesters for this school
+        Semester.objects.filter(session__school=school).exclude(id=semester.id).update(is_active=False)
+        semester.is_active = True
+        semester.save(update_fields=["is_active"])
+        return Response(SemesterSerializer(semester).data, status=status.HTTP_200_OK)
+
 
 
 class TimetableEntryViewSet(viewsets.ModelViewSet):
@@ -42,7 +106,7 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
         fac_qs = get_user_scope_faculties(user)
         sch_qs = get_user_scope_schools(user)
 
-        return TimetableEntry.objects.filter(
+        qs = TimetableEntry.objects.filter(
             Q(course__owning_department__in=dept_qs)
             | Q(course__owning_faculty__in=fac_qs)
             | Q(course__owning_school__in=sch_qs)
@@ -50,6 +114,17 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
             | Q(venue__owning_faculty__in=fac_qs)
             | Q(venue__owning_school__in=sch_qs)
         ).distinct()
+
+        semester_param = self.request.query_params.get("semester")
+        if semester_param:
+            qs = qs.filter(semester_id=semester_param)
+        program_param = self.request.query_params.get("program")
+        if program_param:
+            qs = qs.filter(
+                Q(course__target_program_id=program_param)
+                | Q(course__program_scope="general")
+            )
+        return qs
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
@@ -126,6 +201,8 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
         start_date = self.request.query_params.get("start_date")
         end_date = self.request.query_params.get("end_date")
         status_param = self.request.query_params.get("status")
+        semester_param = self.request.query_params.get("semester")
+        program_param = self.request.query_params.get("program")
 
         if session_date:
             qs = qs.filter(session_date=session_date)
@@ -135,6 +212,13 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(session_date__lte=end_date)
         if status_param and status_param != "all":
             qs = qs.filter(status=status_param)
+        if semester_param:
+            qs = qs.filter(timetable_entry__semester_id=semester_param)
+        if program_param:
+            qs = qs.filter(
+                Q(timetable_entry__course__target_program_id=program_param)
+                | Q(timetable_entry__course__program_scope="general")
+            )
 
         return qs.order_by("session_date", "session_start_time")
 

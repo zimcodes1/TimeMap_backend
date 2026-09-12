@@ -10,6 +10,10 @@ class CourseSerializer(serializers.ModelSerializer):
     owning_department_name = serializers.ReadOnlyField(source="owning_department.name")
     owning_faculty_name = serializers.ReadOnlyField(source="owning_faculty.name")
     owning_school_name = serializers.ReadOnlyField(source="owning_school.name")
+    semester_name = serializers.ReadOnlyField(source="semester.get_name_display")
+    session_label = serializers.ReadOnlyField(source="semester.session.label")
+    target_program_name = serializers.ReadOnlyField(source="target_program.name")
+    target_program_code = serializers.ReadOnlyField(source="target_program.code")
     registration_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -26,6 +30,13 @@ class CourseSerializer(serializers.ModelSerializer):
             "owning_faculty_name",
             "owning_school",
             "owning_school_name",
+            "semester",
+            "semester_name",
+            "session_label",
+            "program_scope",
+            "target_program",
+            "target_program_name",
+            "target_program_code",
             "lecturers",
             "registration_count",
         )
@@ -70,6 +81,8 @@ class CourseSerializer(serializers.ModelSerializer):
         owning_dept = attrs.get("owning_department", self.instance.owning_department if self.instance else None)
         owning_fac = attrs.get("owning_faculty", self.instance.owning_faculty if self.instance else None)
         owning_sch = attrs.get("owning_school", self.instance.owning_school if self.instance else None)
+        program_scope = attrs.get("program_scope", self.instance.program_scope if self.instance else Course.ProgramScope.GENERAL)
+        target_prog = attrs.get("target_program", self.instance.target_program if self.instance else None)
 
         # Validate that only matching ownership field is set
         if owning_level == Course.OwningLevel.DEPARTMENT and not owning_dept:
@@ -78,6 +91,15 @@ class CourseSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"owning_faculty": "owning_faculty is required for faculty-owned course."})
         if owning_level == Course.OwningLevel.SCHOOL and not owning_sch:
             raise serializers.ValidationError({"owning_school": "owning_school is required for school-owned course."})
+
+        # Program scope validation
+        if program_scope == Course.ProgramScope.PROGRAM:
+            if not target_prog:
+                raise serializers.ValidationError({"target_program": "target_program is required when program_scope is 'program'."})
+            if owning_dept and target_prog.department_id != owning_dept.id:
+                raise serializers.ValidationError({"target_program": "target_program must belong to the course's owning department."})
+        elif program_scope == Course.ProgramScope.GENERAL:
+            attrs["target_program"] = None
 
         # Creation-time ownership guardrails based on requesting admin's level
         if user.role == "admin" and hasattr(user, "admin_profile"):
@@ -112,6 +134,7 @@ class CourseAccessGrantSerializer(serializers.ModelSerializer):
     granted_to_department_name = serializers.ReadOnlyField(source="granted_to_department.name")
     granted_to_faculty_name = serializers.ReadOnlyField(source="granted_to_faculty.name")
     granted_to_school_name = serializers.ReadOnlyField(source="granted_to_school.name")
+    target_program_name = serializers.ReadOnlyField(source="target_program.name")
     initiated_by_name = serializers.ReadOnlyField(source="initiated_by.full_name")
     decided_by_name = serializers.ReadOnlyField(source="decided_by.full_name")
 
@@ -129,6 +152,9 @@ class CourseAccessGrantSerializer(serializers.ModelSerializer):
             "granted_to_faculty_name",
             "granted_to_school",
             "granted_to_school_name",
+            "grant_scope",
+            "target_program",
+            "target_program_name",
             "direction",
             "status",
             "initiated_by",
@@ -139,6 +165,21 @@ class CourseAccessGrantSerializer(serializers.ModelSerializer):
             "created_at",
         )
         read_only_fields = ("id", "initiated_by", "decided_by", "decided_at", "created_at")
+
+    def validate(self, attrs):
+        grant_scope = attrs.get("grant_scope", self.instance.grant_scope if self.instance else CourseAccessGrant.GrantScope.GENERAL)
+        target_prog = attrs.get("target_program", self.instance.target_program if self.instance else None)
+        granted_dept = attrs.get("granted_to_department", self.instance.granted_to_department if self.instance else None)
+
+        if grant_scope == CourseAccessGrant.GrantScope.PROGRAM:
+            if not target_prog:
+                raise serializers.ValidationError({"target_program": "target_program is required when grant_scope is 'program'."})
+            if granted_dept and target_prog.department_id != granted_dept.id:
+                raise serializers.ValidationError({"target_program": "target_program must belong to the granted department."})
+        elif grant_scope == CourseAccessGrant.GrantScope.GENERAL:
+            attrs["target_program"] = None
+
+        return attrs
 
 
 class CourseRegistrationSerializer(serializers.ModelSerializer):

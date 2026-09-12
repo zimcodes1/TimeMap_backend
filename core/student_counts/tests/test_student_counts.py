@@ -1,17 +1,20 @@
 from accounts.models import AdminOfficer, User
-from hierarchy.models import Department, Faculty, School
+from hierarchy.models import Department, Faculty, Program, School
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from student_counts.models import DepartmentStudentCount
+from student_counts.models import ProgramStudentCount
 
 
-class DepartmentStudentCountTests(APITestCase):
+class ProgramStudentCountTests(APITestCase):
     def setUp(self):
         school = School.objects.create(name="Science", code="SCI")
         self.faculty = Faculty.objects.create(school=school, name="Computing", code="CMP")
         self.department = Department.objects.create(faculty=self.faculty, name="Computer Science", code="CSC")
         self.other_department = Department.objects.create(faculty=self.faculty, name="Mathematics", code="MTH")
+        self.program = self.department.programs.filter(is_default=True).first()
+        self.other_program = self.other_department.programs.filter(is_default=True).first()
+
         self.department_user = User.objects.create_user(
             identifier="DEPT", password="password", role="admin", requires_password_reset=False
         )
@@ -29,37 +32,37 @@ class DepartmentStudentCountTests(APITestCase):
 
     def test_department_admin_can_create_only_own_total(self):
         self.client.force_authenticate(self.department_user)
-        response = self.client.post("/api/student-counts/departments/", {"department": self.department.id, "level": 200, "count": 240}, format="json")
+        response = self.client.post("/api/student-counts/programs/", {"program": self.program.id, "level": 200, "count": 240}, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["count"], 240)
         self.assertEqual(response.data["updated_by_name"], "Department Admin")
 
-        analytics = self.client.get("/api/student-counts/departments/analytics/")
+        analytics = self.client.get("/api/student-counts/programs/analytics/")
         self.assertEqual(analytics.status_code, status.HTTP_200_OK)
-        self.assertEqual(analytics.data["available_dimensions"], ["level"])
-        self.assertEqual(analytics.data["by_department"], [])
+        self.assertEqual(analytics.data["available_dimensions"], ["level", "program"])
+        self.assertEqual(len(analytics.data["by_program"]), 1)
         self.assertEqual(analytics.data["summary"]["levels_reporting"], 1)
 
-        denied = self.client.post("/api/student-counts/departments/", {"department": self.other_department.id, "level": 200, "count": 99}, format="json")
+        denied = self.client.post("/api/student-counts/programs/", {"program": self.other_program.id, "level": 200, "count": 99}, format="json")
         self.assertEqual(denied.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_higher_admin_can_view_scope_but_not_write(self):
-        DepartmentStudentCount.objects.create(department=self.department, level=200, count=240)
-        DepartmentStudentCount.objects.create(department=self.other_department, level=200, count=180)
+        ProgramStudentCount.objects.create(program=self.program, level=200, count=240)
+        ProgramStudentCount.objects.create(program=self.other_program, level=200, count=180)
         self.client.force_authenticate(self.faculty_user)
-        response = self.client.get("/api/student-counts/departments/analytics/?faculty_id=%s" % self.faculty.id)
+        response = self.client.get("/api/student-counts/programs/analytics/?faculty_id=%s" % self.faculty.id)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["summary"]["total_students"], 420)
         self.assertEqual(len(response.data["by_department"]), 2)
         self.assertEqual(response.data["by_faculty"], [])
         self.assertNotIn("school", response.data["available_dimensions"])
 
-        denied = self.client.patch("/api/student-counts/departments/1/", {"count": 1}, format="json")
+        denied = self.client.patch("/api/student-counts/programs/1/", {"count": 1}, format="json")
         self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_school_and_university_admin_analytics_dimensions(self):
-        DepartmentStudentCount.objects.create(department=self.department, level=200, count=240)
-        DepartmentStudentCount.objects.create(department=self.other_department, level=200, count=180)
+        ProgramStudentCount.objects.create(program=self.program, level=200, count=240)
+        ProgramStudentCount.objects.create(program=self.other_program, level=200, count=180)
 
         # School admin
         school_user = User.objects.create_user(
@@ -70,7 +73,7 @@ class DepartmentStudentCountTests(APITestCase):
             level="school", scope_school=self.faculty.school,
         )
         self.client.force_authenticate(school_user)
-        school_res = self.client.get("/api/student-counts/departments/analytics/")
+        school_res = self.client.get("/api/student-counts/programs/analytics/")
         self.assertEqual(school_res.status_code, status.HTTP_200_OK)
         self.assertEqual(school_res.data["available_dimensions"], ["level", "faculty"])
         self.assertEqual(school_res.data["by_department"], [])
@@ -87,7 +90,7 @@ class DepartmentStudentCountTests(APITestCase):
             level="university",
         )
         self.client.force_authenticate(uni_user)
-        uni_res = self.client.get("/api/student-counts/departments/analytics/")
+        uni_res = self.client.get("/api/student-counts/programs/analytics/")
         self.assertEqual(uni_res.status_code, status.HTTP_200_OK)
         self.assertEqual(uni_res.data["available_dimensions"], ["level", "school"])
         self.assertEqual(uni_res.data["by_department"], [])

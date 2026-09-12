@@ -3,14 +3,91 @@ from discrepancies.models import DiscrepancyRequest
 from rest_framework import serializers
 
 from .conflict_engine import check_student_exam_clash, determine_booking_routing
-from .models import ExamSitting, LectureSession, TimetableEntry
+from .models import AcademicSession, ExamSitting, LectureSession, Semester, TimetableEntry
 from .services import materialize_timetable_entry
+
+
+class SemesterSerializer(serializers.ModelSerializer):
+    session_label = serializers.ReadOnlyField(source="session.label")
+    school_id = serializers.ReadOnlyField(source="session.school.id")
+    school_name = serializers.ReadOnlyField(source="session.school.name")
+    created_by_name = serializers.ReadOnlyField(source="created_by.full_name")
+
+    class Meta:
+        model = Semester
+        fields = (
+            "id",
+            "session",
+            "session_label",
+            "school_id",
+            "school_name",
+            "name",
+            "start_date",
+            "end_date",
+            "duration_type",
+            "duration_value",
+            "lecture_start_date",
+            "lecture_end_date",
+            "exam_start_date",
+            "exam_end_date",
+            "is_active",
+            "created_by",
+            "created_by_name",
+            "created_at",
+        )
+        read_only_fields = ("id", "created_by", "created_by_name", "created_at")
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        session = attrs.get("session", self.instance.session if self.instance else None)
+        if request and request.user and request.user.is_authenticated:
+            user = request.user
+            if not (user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile"))):
+                if hasattr(user, "admin_profile") and user.admin_profile.level == "school":
+                    if session and user.admin_profile.scope_school_id and session.school_id != user.admin_profile.scope_school_id:
+                        raise serializers.ValidationError({"session": "School admins can only manage semesters within their assigned school."})
+        return attrs
+
+
+class AcademicSessionSerializer(serializers.ModelSerializer):
+    school_name = serializers.ReadOnlyField(source="school.name")
+    school_code = serializers.ReadOnlyField(source="school.code")
+    semesters = SemesterSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = AcademicSession
+        fields = (
+            "id",
+            "school",
+            "school_name",
+            "school_code",
+            "label",
+            "start_date",
+            "end_date",
+            "is_current",
+            "semesters",
+            "created_at",
+        )
+        read_only_fields = ("id", "created_at")
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        school = attrs.get("school", self.instance.school if self.instance else None)
+        if request and request.user and request.user.is_authenticated:
+            user = request.user
+            if not (user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile"))):
+                if hasattr(user, "admin_profile") and user.admin_profile.level == "school":
+                    if school and user.admin_profile.scope_school_id and school.id != user.admin_profile.scope_school_id:
+                        raise serializers.ValidationError({"school": "School admins can only create sessions for their assigned school."})
+        return attrs
 
 
 class TimetableEntrySerializer(serializers.ModelSerializer):
     course_code = serializers.ReadOnlyField(source="course.code")
     venue_name = serializers.ReadOnlyField(source="venue.name")
     created_by_name = serializers.ReadOnlyField(source="created_by.full_name")
+    semester_name = serializers.ReadOnlyField(source="semester.get_name_display")
+    session_label = serializers.ReadOnlyField(source="semester.session.label")
 
     class Meta:
         model = TimetableEntry
@@ -30,6 +107,9 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             "status",
             "created_by",
             "created_by_name",
+            "semester",
+            "semester_name",
+            "session_label",
             "academic_session",
             "created_at",
         )
@@ -43,6 +123,9 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             end_time = attrs.get("end_time", self.instance.end_time if self.instance else None)
             entry_type = attrs.get("entry_type", self.instance.entry_type if self.instance else "lecture")
             course = attrs.get("course", self.instance.course if self.instance else None)
+            semester = attrs.get("semester", self.instance.semester if self.instance else None)
+            if semester and not attrs.get("academic_session"):
+                attrs["academic_session"] = semester.session.label
             academic_session = attrs.get("academic_session", self.instance.academic_session if self.instance else "2025/2026")
             recurrence_rule = attrs.get("recurrence_rule", self.instance.recurrence_rule if self.instance else None)
             recurrence_start_date = attrs.get("recurrence_start_date", self.instance.recurrence_start_date if self.instance else None)
@@ -114,6 +197,9 @@ class LectureSessionSerializer(serializers.ModelSerializer):
     course_code = serializers.ReadOnlyField(source="timetable_entry.course.code")
     course_title = serializers.ReadOnlyField(source="timetable_entry.course.title")
     department_name = serializers.ReadOnlyField(source="timetable_entry.course.owning_department.name")
+    program_name = serializers.ReadOnlyField(source="timetable_entry.course.target_program.name")
+    program_code = serializers.ReadOnlyField(source="timetable_entry.course.target_program.code")
+    program_scope = serializers.ReadOnlyField(source="timetable_entry.course.program_scope")
     venue_name = serializers.ReadOnlyField(source="venue.name")
     can_shift = serializers.SerializerMethodField()
     report_status = serializers.SerializerMethodField()
@@ -127,6 +213,9 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "course_code",
             "course_title",
             "department_name",
+            "program_name",
+            "program_code",
+            "program_scope",
             "session_date",
             "session_start_time",
             "session_end_time",

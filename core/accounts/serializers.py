@@ -46,16 +46,22 @@ class UserSerializer(serializers.ModelSerializer):
 
 class StudentProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
+    program_name = serializers.ReadOnlyField(source="program.name")
+    program_code = serializers.ReadOnlyField(source="program.code")
 
     class Meta:
         model = Student
-        fields = ("id", "user", "matric_number", "full_name", "department", "level", "is_class_rep", "email")
+        fields = ("id", "user", "matric_number", "full_name", "department", "program", "program_name", "program_code", "level", "is_class_rep", "email")
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if instance.department:
             data["department_id"] = instance.department.id
             data["department"] = instance.department.name
+        if instance.program:
+            data["program_id"] = instance.program.id
+            data["program"] = instance.program.name
+            data["program_code"] = instance.program.code
         return data
 
     def validate(self, attrs):
@@ -81,7 +87,19 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
         # 3. Department Level & Scoped Permission Check
         department = attrs.get("department") if "department" in attrs else (instance.department if instance else None)
+        program = attrs.get("program") if "program" in attrs else (instance.program if instance else None)
         level = attrs.get("level") if "level" in attrs else (instance.level if instance else None)
+
+        if program and department and program.department_id != department.id:
+            raise serializers.ValidationError({"program": "Selected program does not belong to the selected department."})
+
+        # Auto assign default program if not specified
+        if not program and department and not instance:
+            from hierarchy.models import Program
+            default_prog = Program.objects.filter(department=department, is_default=True).first()
+            if default_prog:
+                attrs["program"] = default_prog
+                program = default_prog
 
         if request and request.user and request.user.is_authenticated:
             req_user = request.user
@@ -96,23 +114,38 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             if not allowed_depts.filter(id=department.id).exists():
                 raise serializers.ValidationError({"department": "You do not have permission to assign students to this department."})
 
-
-        if department and level is not None:
+        # Level validation
+        if program and level is not None:
+            max_lvl = program.max_level
+            if level < 100 or level > max_lvl:
+                raise serializers.ValidationError({
+                    "level": f"Level {level}L is outside the allowed level range (100L - {max_lvl}L) for program {program.name}."
+                })
+        elif department and level is not None:
             max_lvl = getattr(department, "max_level", 400)
             if level < 100 or level > max_lvl:
                 raise serializers.ValidationError({
                     "level": f"Level {level}L is outside the allowed level range (100L - {max_lvl}L) for {department.name}."
                 })
 
-        # 4. Class Rep Restriction (Max 2 per Department & Level)
-        if is_class_rep and department and level is not None:
-            reps_qs = Student.objects.filter(department=department, level=level, is_class_rep=True)
-            if instance:
-                reps_qs = reps_qs.exclude(id=instance.id)
-            if reps_qs.count() >= 2:
-                raise serializers.ValidationError({
-                    "is_class_rep": f"Department {department.code} already has the maximum limit of 2 class reps for level {level}L."
-                })
+        # 4. Class Rep Restriction (Max 2 per Program & Level)
+        if is_class_rep and level is not None:
+            if program:
+                reps_qs = Student.objects.filter(program=program, level=level, is_class_rep=True)
+                if instance:
+                    reps_qs = reps_qs.exclude(id=instance.id)
+                if reps_qs.count() >= 2:
+                    raise serializers.ValidationError({
+                        "is_class_rep": f"Program {program.code} already has the maximum limit of 2 class reps for level {level}L."
+                    })
+            elif department:
+                reps_qs = Student.objects.filter(department=department, level=level, is_class_rep=True)
+                if instance:
+                    reps_qs = reps_qs.exclude(id=instance.id)
+                if reps_qs.count() >= 2:
+                    raise serializers.ValidationError({
+                        "is_class_rep": f"Department {department.code} already has the maximum limit of 2 class reps for level {level}L."
+                    })
 
         return attrs
 
