@@ -70,10 +70,21 @@ class CourseViewSet(viewsets.ModelViewSet):
                     | Q(course__owning_department=admin_prof.scope_department)
                 ).values_list("course_id", flat=True)
 
-                return Course.objects.filter(
+                base_qs = Course.objects.filter(
                     Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department=admin_prof.scope_department)
                     | Q(id__in=granted_course_ids)
                 ).distinct()
+
+            semester_param = self.request.query_params.get("semester")
+            if semester_param:
+                base_qs = base_qs.filter(semester_id=semester_param)
+            program_param = self.request.query_params.get("program")
+            if program_param:
+                base_qs = base_qs.filter(
+                    Q(target_program_id=program_param)
+                    | Q(program_scope="general")
+                )
+            return base_qs
 
         return Course.objects.none()
 

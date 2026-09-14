@@ -69,3 +69,27 @@ class CanManageDepartment(BasePermission):
             and hasattr(user, "admin_profile")
             and user.admin_profile.level == "faculty"
         )
+
+
+class CanManageProgram(BasePermission):
+    """
+    Only Department-level admins or superusers can create, update, or delete programs.
+    Read-only access is permitted for all authenticated users (scoped by user scope).
+    """
+
+    message = "Only Department level admins can create, edit, or delete programs."
+
+    def has_permission(self, request, view):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+            return True
+        return bool(
+            user.role == "admin"
+            and hasattr(user, "admin_profile")
+            and user.admin_profile.level == "department"
+        )
+

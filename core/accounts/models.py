@@ -68,6 +68,10 @@ class Student(models.Model):
     matric_number = models.CharField(max_length=50, unique=True)
     full_name = models.CharField(max_length=255)
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name="students")
+    program = models.ForeignKey(
+        "hierarchy.Program", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="students",
+    )
     level = models.IntegerField()
     is_class_rep = models.BooleanField(default=False)
     email = models.EmailField(null=True, blank=True)
@@ -75,6 +79,9 @@ class Student(models.Model):
     def save(self, *args, **kwargs):
         if self.matric_number:
             self.matric_number = self.matric_number.strip().upper()
+        if not self.program and self.department:
+            from hierarchy.models import Program
+            self.program = Program.objects.filter(department=self.department, is_default=True).first()
         super().save(*args, **kwargs)
 
     def __str__(self):

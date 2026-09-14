@@ -1,14 +1,14 @@
 from accounts.models import AdminOfficer
 from django.core.validators import MinValueValidator
 from django.db import models
-from hierarchy.models import Department
+from hierarchy.models import Program
 
 
-class DepartmentStudentCount(models.Model):
-    """The current planning population for a department, independent of user accounts."""
+class ProgramStudentCount(models.Model):
+    """The current planning population for a program, independent of user accounts."""
 
-    department = models.ForeignKey(
-        Department,
+    program = models.ForeignKey(
+        Program,
         on_delete=models.CASCADE,
         related_name="student_counts",
     )
@@ -24,10 +24,16 @@ class DepartmentStudentCount(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ("department__faculty__school__name", "department__faculty__name", "department__name", "level")
+        ordering = (
+            "program__department__faculty__school__name",
+            "program__department__faculty__name",
+            "program__department__name",
+            "program__name",
+            "level",
+        )
         constraints = [
-            models.UniqueConstraint(fields=("department", "level"), name="unique_department_student_count_level"),
+            models.UniqueConstraint(fields=("program", "level"), name="unique_program_student_count_level"),
         ]
 
     def __str__(self):
-        return f"{self.department.code} {self.level}L: {self.count} students"
+        return f"{self.program.code} {self.level}L: {self.count} students"
