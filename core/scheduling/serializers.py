@@ -3,7 +3,15 @@ from discrepancies.models import DiscrepancyRequest
 from rest_framework import serializers
 
 from .conflict_engine import check_student_exam_clash, determine_booking_routing
-from .models import AcademicSession, ExamSitting, LectureSession, Semester, TimetableEntry
+from .models import (
+    AcademicSession,
+    ExamSitting,
+    GenerationScopePermission,
+    LectureSession,
+    Semester,
+    TimetableEntry,
+    TimetableGenerationRun,
+)
 from .services import materialize_timetable_entry
 
 
@@ -316,3 +324,81 @@ class ExamSittingSerializer(serializers.ModelSerializer):
                 validated_data["registered_candidates_count"] = 0
 
         return super().create(validated_data)
+
+
+class GenerationScopePermissionSerializer(serializers.ModelSerializer):
+    school_name = serializers.ReadOnlyField(source="school.name")
+    school_code = serializers.ReadOnlyField(source="school.code")
+
+    class Meta:
+        model = GenerationScopePermission
+        fields = (
+            "id",
+            "school",
+            "school_name",
+            "school_code",
+            "allow_faculty_generation",
+            "allow_department_generation",
+            "updated_at",
+        )
+        read_only_fields = ("id", "updated_at")
+
+
+class TimetableGenerationRunSerializer(serializers.ModelSerializer):
+    semester_name = serializers.ReadOnlyField(source="semester.get_name_display")
+    session_label = serializers.ReadOnlyField(source="semester.session.label")
+    school_id = serializers.ReadOnlyField(source="semester.session.school.id")
+    school_name = serializers.ReadOnlyField(source="semester.session.school.name")
+    initiated_by_name = serializers.ReadOnlyField(source="initiated_by.identifier")
+
+    class Meta:
+        model = TimetableGenerationRun
+        fields = (
+            "id",
+            "semester",
+            "semester_name",
+            "session_label",
+            "school_id",
+            "school_name",
+            "scope_type",
+            "scope_id",
+            "scope_name",
+            "status",
+            "result_status",
+            "hard_conflicts_count",
+            "student_conflicts_count",
+            "lecturer_conflicts_count",
+            "venue_conflicts_count",
+            "daily_limit_violations_count",
+            "occurrence_day_violations_count",
+            "capacity_penalty",
+            "fitness_score",
+            "is_published",
+            "initiated_by",
+            "initiated_by_name",
+            "created_at",
+            "completed_at",
+        )
+        read_only_fields = fields
+
+
+class TimetableGenerationRunDetailSerializer(TimetableGenerationRunSerializer):
+    class Meta(TimetableGenerationRunSerializer.Meta):
+        fields = TimetableGenerationRunSerializer.Meta.fields + (
+            "conflict_report",
+            "generation_metrics",
+            "assignments_payload",
+        )
+
+
+class GenerateTimetableRequestSerializer(serializers.Serializer):
+    semester_id = serializers.IntegerField(required=True)
+    scope_type = serializers.ChoiceField(
+        choices=["school", "faculty", "department"], required=True
+    )
+    scope_id = serializers.IntegerField(required=True)
+    population_size = serializers.IntegerField(required=False, default=60, min_value=10, max_value=200)
+    max_generations = serializers.IntegerField(required=False, default=150, min_value=10, max_value=500)
+    mutation_rate = serializers.FloatField(required=False, default=0.08, min_value=0.01, max_value=0.5)
+    publish_immediately = serializers.BooleanField(required=False, default=False)
+

@@ -1,4 +1,5 @@
-from accounts.models import AdminOfficer, LecturerStaff
+import uuid
+from accounts.models import AdminOfficer, LecturerStaff, User
 from courses.models import Course
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -162,3 +163,93 @@ class ExamSitting(models.Model):
 
     def __str__(self):
         return f"ExamSitting for {self.timetable_entry.title} ({self.registered_candidates_count} candidates)"
+
+
+class GenerationScopePermission(models.Model):
+    """
+    Controls decentralized timetable generation rights within a School.
+    System administrators (superusers) configure whether Faculty or Department
+    admins are permitted to run scoped GA timetable generation.
+    """
+
+    school = models.OneToOneField(
+        School, on_delete=models.CASCADE, related_name="generation_permission"
+    )
+    allow_faculty_generation = models.BooleanField(default=False)
+    allow_department_generation = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"GenerationPermission({self.school.code}: fac={self.allow_faculty_generation}, dept={self.allow_department_generation})"
+
+
+class TimetableGenerationRun(models.Model):
+    """
+    Tracks an automated timetable generation run produced by the Genetic Algorithm.
+    Stores complete evaluation statistics, conflict diagnostics, and generated assignments.
+    """
+
+    class ScopeType(models.TextChoices):
+        SCHOOL = "school", "School"
+        FACULTY = "faculty", "Faculty"
+        DEPARTMENT = "department", "Department"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    class ResultStatus(models.TextChoices):
+        OPTIMAL = "optimal", "Optimal"
+        FEASIBLE = "feasible", "Feasible"
+        BEST_AVAILABLE = "best_available", "Best Available"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    semester = models.ForeignKey(
+        Semester, on_delete=models.CASCADE, related_name="generation_runs"
+    )
+    scope_type = models.CharField(max_length=20, choices=ScopeType.choices)
+    scope_id = models.PositiveIntegerField()
+    scope_name = models.CharField(max_length=255, blank=True, default="")
+
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING
+    )
+    result_status = models.CharField(
+        max_length=20, choices=ResultStatus.choices, default=ResultStatus.BEST_AVAILABLE
+    )
+
+    # Detailed constraint counters
+    hard_conflicts_count = models.PositiveIntegerField(default=0)
+    student_conflicts_count = models.PositiveIntegerField(default=0)
+    lecturer_conflicts_count = models.PositiveIntegerField(default=0)
+    venue_conflicts_count = models.PositiveIntegerField(default=0)
+    daily_limit_violations_count = models.PositiveIntegerField(default=0)
+    occurrence_day_violations_count = models.PositiveIntegerField(default=0)
+    capacity_penalty = models.PositiveIntegerField(default=0)
+    fitness_score = models.FloatField(default=0.0)
+
+    # Diagnostics & assignments payload
+    conflict_report = models.JSONField(default=dict, blank=True)
+    generation_metrics = models.JSONField(default=dict, blank=True)
+    assignments_payload = models.JSONField(default=list, blank=True)
+
+    is_published = models.BooleanField(default=False)
+    initiated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="timetable_generation_runs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"GenerationRun #{self.id} [{self.scope_type}:{self.scope_name}] ({self.status} - {self.result_status})"
+

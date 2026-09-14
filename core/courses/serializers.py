@@ -23,6 +23,8 @@ class CourseSerializer(serializers.ModelSerializer):
             "code",
             "title",
             "level",
+            "course_type",
+            "required_occurrences_per_week",
             "owning_level",
             "owning_department",
             "owning_department_name",
