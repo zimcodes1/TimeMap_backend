@@ -20,15 +20,15 @@ class ScopedPermissionsTests(APITestCase):
         self.faculty2 = Faculty.objects.create(school=self.school2, name="Faculty of Humanities", code="FOH")
         self.dept3 = Department.objects.create(faculty=self.faculty2, name="English", code="ENG")
 
-        # Create students in each department
+        # Create students in each department (as class reps so dept admins manage them)
         self.s1_user = User.objects.create_user(identifier="STU001", password="password", role=User.Role.STUDENT, requires_password_reset=False)
-        self.student1 = Student.objects.create(user=self.s1_user, matric_number="STU001", full_name="Student Dept1", department=self.dept1, level=100)
+        self.student1 = Student.objects.create(user=self.s1_user, matric_number="STU001", full_name="Student Dept1", department=self.dept1, level=100, is_class_rep=True)
 
         self.s2_user = User.objects.create_user(identifier="STU002", password="password", role=User.Role.STUDENT, requires_password_reset=False)
-        self.student2 = Student.objects.create(user=self.s2_user, matric_number="STU002", full_name="Student Dept2", department=self.dept2, level=200)
+        self.student2 = Student.objects.create(user=self.s2_user, matric_number="STU002", full_name="Student Dept2", department=self.dept2, level=200, is_class_rep=True)
 
         self.s3_user = User.objects.create_user(identifier="STU003", password="password", role=User.Role.STUDENT, requires_password_reset=False)
-        self.student3 = Student.objects.create(user=self.s3_user, matric_number="STU003", full_name="Student Dept3", department=self.dept3, level=300)
+        self.student3 = Student.objects.create(user=self.s3_user, matric_number="STU003", full_name="Student Dept3", department=self.dept3, level=300, is_class_rep=True)
 
         # Create Admin Officers:
         # Dept Admin (Dept 1)
@@ -97,14 +97,11 @@ class ScopedPermissionsTests(APITestCase):
         self.assertIn(self.dept2.id, dept_ids)
         self.assertNotIn(self.dept3.id, dept_ids)
 
-        # Students list should include Student 1 and Student 2, but NOT Student 3
+        # Under "managers manage managers", Faculty Admins manage Dept Admins, not students directly
         stu_url = reverse("student-list")
         stu_res = self.client.get(stu_url)
         self.assertEqual(stu_res.status_code, status.HTTP_200_OK)
-        stu_ids = [s["id"] for s in stu_res.data]
-        self.assertIn(self.student1.id, stu_ids)
-        self.assertIn(self.student2.id, stu_ids)
-        self.assertNotIn(self.student3.id, stu_ids)
+        self.assertEqual(stu_res.data, [])
 
     def test_school_admin_downward_scope_resolution(self):
         self.client.force_authenticate(user=self.sch_admin_user)

@@ -27,6 +27,24 @@ class Course(models.Model):
 
     lecturers = models.ManyToManyField(LecturerStaff, blank=True, related_name="assigned_courses")
 
+    # Semester and program scoping
+    semester = models.ForeignKey(
+        "scheduling.Semester", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="courses",
+    )
+
+    class ProgramScope(models.TextChoices):
+        GENERAL = "general", "General (all programs)"
+        PROGRAM = "program", "Program-Specific"
+
+    program_scope = models.CharField(
+        max_length=20, choices=ProgramScope.choices, default=ProgramScope.GENERAL,
+    )
+    target_program = models.ForeignKey(
+        "hierarchy.Program", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="targeted_courses",
+    )
+
     def save(self, *args, **kwargs):
         if self.code:
             self.code = self.code.strip().upper()
@@ -70,6 +88,18 @@ class CourseAccessGrant(models.Model):
         AdminOfficer, null=True, blank=True, on_delete=models.SET_NULL, related_name="decided_course_grants"
     )
     decided_at = models.DateTimeField(null=True, blank=True)
+
+    # Program-scoped grants
+    class GrantScope(models.TextChoices):
+        GENERAL = "general", "General (all programs)"
+        PROGRAM = "program", "Program-Specific"
+
+    grant_scope = models.CharField(max_length=20, choices=GrantScope.choices, default=GrantScope.GENERAL)
+    target_program = models.ForeignKey(
+        "hierarchy.Program", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="access_grants",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

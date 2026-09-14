@@ -94,6 +94,7 @@ class NotificationsWorkflowTests(APITestCase):
             request_type="cancel",
             reason="Holiday",
             initiated_by=self.user,
+            routed_to=self.admin,
             status=DiscrepancyRequest.Status.PENDING,
         )
 

@@ -4,7 +4,7 @@ import re
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from accounts.models import AdminOfficer, LecturerStaff, Student, User
-from hierarchy.models import Department, Faculty, School
+from hierarchy.models import Department, Faculty, Program, School
 
 
 def get_default_password(identifier, prefix="Pass"):
@@ -77,12 +77,20 @@ class Command(BaseCommand):
                 else:
                     updated_count += 1
 
+                prog_code = (row.get("program_code") or "").strip().upper()
+                program = None
+                if prog_code:
+                    program = Program.objects.filter(department=department, code=prog_code).first()
+                if not program:
+                    program = Program.objects.filter(department=department, is_default=True).first()
+
                 Student.objects.update_or_create(
                     user=user,
                     defaults={
                         "matric_number": matric_number,
                         "full_name": full_name,
                         "department": department,
+                        "program": program,
                         "level": level,
                         "is_class_rep": is_class_rep,
                         "email": email,
