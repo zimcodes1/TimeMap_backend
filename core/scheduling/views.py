@@ -13,14 +13,36 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import AcademicSession, ExamSitting, LectureSession, Semester, TimetableEntry
-from .permissions import CanManageSessionAndSemester
+import datetime
+from .models import (
+    AcademicSession,
+    ExamSitting,
+    GenerationScopePermission,
+    LectureSession,
+    Semester,
+    TimetableEntry,
+    TimetableGenerationRun,
+)
+from .optimizer.generator import generate_timetable
+from .optimizer.genetic.algorithm import OptimizerConfig
+from .optimizer.preprocessing.pipeline import build_scheduling_problem_from_db
+from .optimizer.publisher import publish_generation_run
+from .permissions import (
+    CanGenerateTimetable,
+    CanManageGenerationPermissions,
+    CanManageSessionAndSemester,
+    check_scope_generation_permission,
+)
 from .serializers import (
     AcademicSessionSerializer,
     ExamSittingSerializer,
+    GenerateTimetableRequestSerializer,
+    GenerationScopePermissionSerializer,
     LectureSessionSerializer,
     SemesterSerializer,
     TimetableEntrySerializer,
+    TimetableGenerationRunDetailSerializer,
+    TimetableGenerationRunSerializer,
 )
 from .services import materialize_timetable_entry
 
@@ -335,3 +357,178 @@ class ExamSittingViewSet(viewsets.ModelViewSet):
         if self.action in ["create", "update", "partial_update", "destroy"]:
             return [IsAuthenticated(), IsPasswordResetDone(), IsAdminUserRole()]
         return super().get_permissions()
+
+
+class TimetableGenerationViewSet(viewsets.ViewSet):
+    """
+    Automated timetable generation and discrepancy preview engine using Genetic Algorithm.
+    """
+
+    permission_classes = [IsAuthenticated, IsPasswordResetDone, CanGenerateTimetable]
+
+    @extend_schema(
+        summary="Generate a weekly timetable using Genetic Algorithm",
+        request=GenerateTimetableRequestSerializer,
+        responses={200: TimetableGenerationRunDetailSerializer},
+    )
+    def create(self, request):
+        serializer = GenerateTimetableRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        semester_id = data["semester_id"]
+        scope_type = data["scope_type"]
+        scope_id = data["scope_id"]
+
+        semester = Semester.objects.filter(id=semester_id).select_related("session__school").first()
+        if not semester:
+            return Response({"error": "Semester not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Check generation permission
+        is_allowed, reason = check_scope_generation_permission(request.user, semester, scope_type, scope_id)
+        if not is_allowed:
+            return Response({"error": reason}, status=status.HTTP_403_FORBIDDEN)
+
+        # Build problem
+        try:
+            problem = build_scheduling_problem_from_db(
+                semester_id=semester_id,
+                scope_type=scope_type,
+                scope_id=scope_id,
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to prepare scheduling data: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Configure optimizer
+        config = OptimizerConfig(
+            population_size=data.get("population_size", 60),
+            max_generations=data.get("max_generations", 150),
+            mutation_rate=data.get("mutation_rate", 0.08),
+        )
+
+        # Execute optimization
+        result = generate_timetable(problem, config=config)
+
+        # Save run record
+        now = datetime.datetime.now(datetime.timezone.utc)
+        run = TimetableGenerationRun.objects.create(
+            semester=semester,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            scope_name=problem.scope_name,
+            status=TimetableGenerationRun.Status.COMPLETED,
+            result_status=result.status.lower(),
+            hard_conflicts_count=result.hard_conflicts_count,
+            student_conflicts_count=result.evaluation.student_conflicts,
+            lecturer_conflicts_count=result.evaluation.lecturer_conflicts,
+            venue_conflicts_count=result.evaluation.venue_conflicts,
+            daily_limit_violations_count=result.evaluation.daily_limit_violations,
+            occurrence_day_violations_count=result.evaluation.occurrence_day_violations,
+            capacity_penalty=result.evaluation.capacity_penalty,
+            fitness_score=result.fitness,
+            conflict_report=result.conflict_report,
+            generation_metrics={
+                "generations_run": result.generation_count,
+                "runtime_seconds": result.runtime_seconds,
+                "occurrences_total": problem.total_occurrences,
+            },
+            assignments_payload=result.assignments_payload,
+            initiated_by=request.user,
+            completed_at=now,
+        )
+
+        # If publish_immediately was requested
+        if data.get("publish_immediately", False):
+            publish_generation_run(run, created_by_admin=request.user)
+
+        return Response(
+            TimetableGenerationRunDetailSerializer(run).data,
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(summary="List past timetable generation runs", responses={200: TimetableGenerationRunSerializer(many=True)})
+    @action(detail=False, methods=["get"], url_path="runs")
+    def list_runs(self, request):
+        qs = TimetableGenerationRun.objects.select_related("semester__session__school", "initiated_by")
+        user = request.user
+        if not (user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile"))):
+            if hasattr(user, "admin_profile") and user.admin_profile.level == "school":
+                qs = qs.filter(semester__session__school=user.admin_profile.scope_school)
+
+        semester_id = request.query_params.get("semester")
+        if semester_id:
+            qs = qs.filter(semester_id=semester_id)
+        scope_type = request.query_params.get("scope_type")
+        if scope_type:
+            qs = qs.filter(scope_type=scope_type)
+        scope_id = request.query_params.get("scope_id")
+        if scope_id:
+            qs = qs.filter(scope_id=scope_id)
+
+        return Response(TimetableGenerationRunSerializer(qs[:50], many=True).data)
+
+    @extend_schema(summary="Get specific generation run detail and conflict diagnostics", responses={200: TimetableGenerationRunDetailSerializer})
+    @action(detail=False, methods=["get"], url_path="runs/(?P<run_id>[^/.]+)")
+    def get_run(self, request, run_id=None):
+        run = TimetableGenerationRun.objects.filter(id=run_id).select_related("semester__session__school", "initiated_by").first()
+        if not run:
+            return Response({"error": "Generation run not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(TimetableGenerationRunDetailSerializer(run).data)
+
+    @extend_schema(summary="Publish a generated timetable run into live timetable entries")
+    @action(detail=False, methods=["post"], url_path="runs/(?P<run_id>[^/.]+)/publish")
+    def publish_run(self, request, run_id=None):
+        run = TimetableGenerationRun.objects.filter(id=run_id).select_related("semester__session__school").first()
+        if not run:
+            return Response({"error": "Generation run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        is_allowed, reason = check_scope_generation_permission(request.user, run.semester, run.scope_type, run.scope_id)
+        if not is_allowed:
+            return Response({"error": reason}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            pub_result = publish_generation_run(run, created_by_admin=request.user)
+            return Response(pub_result, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Publish failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    @extend_schema(summary="Get or update generation permissions for a school", responses={200: GenerationScopePermissionSerializer})
+    @action(detail=False, methods=["get", "patch"], url_path="permissions")
+    def permissions_endpoint(self, request):
+        if request.method.lower() == "patch":
+            if not (request.user.is_superuser or (request.user.is_staff and not hasattr(request.user, "admin_profile"))):
+                return Response(
+                    {"error": "Only system-level administrators can configure timetable generation permissions."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            school_id = request.data.get("school")
+            if not school_id:
+                return Response({"error": "School ID required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            perm, _ = GenerationScopePermission.objects.get_or_create(school_id=school_id)
+            serializer = GenerationScopePermissionSerializer(perm, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
+
+        # GET
+        user = request.user
+        school_id = request.query_params.get("school")
+        if not school_id:
+            if hasattr(user, "admin_profile") and user.admin_profile.scope_school_id:
+                school_id = user.admin_profile.scope_school_id
+            elif hasattr(user, "admin_profile") and user.admin_profile.scope_faculty:
+                school_id = user.admin_profile.scope_faculty.school_id
+            elif hasattr(user, "admin_profile") and user.admin_profile.scope_department and user.admin_profile.scope_department.faculty:
+                school_id = user.admin_profile.scope_department.faculty.school_id
+
+        if not school_id:
+            return Response({"error": "School ID required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        perm, _ = GenerationScopePermission.objects.get_or_create(school_id=school_id)
+        return Response(GenerationScopePermissionSerializer(perm).data)
+
