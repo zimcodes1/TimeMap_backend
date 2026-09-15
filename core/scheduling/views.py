@@ -407,6 +407,7 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
             population_size=data.get("population_size", 60),
             max_generations=data.get("max_generations", 150),
             mutation_rate=data.get("mutation_rate", 0.08),
+            patience=data.get("stagnation_limit", 40),
         )
 
         # Execute optimization
