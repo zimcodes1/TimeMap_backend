@@ -392,13 +392,24 @@ class TimetableGenerationRunDetailSerializer(TimetableGenerationRunSerializer):
 
 
 class GenerateTimetableRequestSerializer(serializers.Serializer):
-    semester_id = serializers.IntegerField(required=True)
+    semester_id = serializers.IntegerField(required=False)
+    semester = serializers.IntegerField(required=False)
     scope_type = serializers.ChoiceField(
         choices=["school", "faculty", "department"], required=True
     )
     scope_id = serializers.IntegerField(required=True)
-    population_size = serializers.IntegerField(required=False, default=60, min_value=10, max_value=200)
-    max_generations = serializers.IntegerField(required=False, default=150, min_value=10, max_value=500)
-    mutation_rate = serializers.FloatField(required=False, default=0.08, min_value=0.01, max_value=0.5)
+    population_size = serializers.IntegerField(required=False, default=60, min_value=10, max_value=300)
+    max_generations = serializers.IntegerField(required=False, default=150, min_value=10, max_value=1000)
+    mutation_rate = serializers.FloatField(required=False, default=0.08, min_value=0.01, max_value=1.0)
+    stagnation_limit = serializers.IntegerField(required=False, default=40, min_value=5, max_value=200)
     publish_immediately = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        if not attrs.get("semester_id") and not attrs.get("semester"):
+            raise serializers.ValidationError({"semester_id": "Either semester_id or semester is required."})
+        if not attrs.get("semester_id"):
+            attrs["semester_id"] = attrs["semester"]
+        if not attrs.get("semester"):
+            attrs["semester"] = attrs["semester_id"]
+        return attrs
 

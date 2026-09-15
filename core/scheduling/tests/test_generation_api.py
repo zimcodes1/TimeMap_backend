@@ -130,6 +130,20 @@ class GenerationAPITests(APITestCase):
         self.assertEqual(detail_res.status_code, status.HTTP_200_OK)
         self.assertEqual(detail_res.data["id"], run_id)
 
+    def test_generate_with_semester_alias(self):
+        self.client.force_authenticate(user=self.school_user)
+        # Verify that sending "semester" instead of "semester_id" also works
+        payload = {
+            "semester": self.semester.id,
+            "scope_type": "school",
+            "scope_id": self.school.id,
+            "population_size": 20,
+            "max_generations": 30,
+        }
+        res = self.client.post("/api/scheduling/generate/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["hard_conflicts_count"], 0)
+
     def test_faculty_admin_permission_control(self):
         self.client.force_authenticate(user=self.fac_user)
 
