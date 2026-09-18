@@ -434,6 +434,7 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
             generation_metrics={
                 "generations_run": result.generation_count,
                 "runtime_seconds": result.runtime_seconds,
+                "elapsed_seconds": result.runtime_seconds,
                 "occurrences_total": problem.total_occurrences,
             },
             assignments_payload=result.assignments_payload,

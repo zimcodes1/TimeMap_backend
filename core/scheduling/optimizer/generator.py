@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from .evaluation.evaluator import EvaluationResult
+from .evaluation.evaluator import EvaluationResult, evaluate
 from .evaluation.report import generate_conflict_report
 from .genetic.algorithm import OptimizerConfig, run_genetic_algorithm
 from .models.assignment import Assignment
@@ -48,6 +48,10 @@ def generate_timetable(
         progress_callback=progress_callback,
     )
 
+    # Re-evaluate winning schedule with collect_details=True to capture diagnostic breakdown items
+    if best_chrome and best_chrome.assignments:
+        final_eval = evaluate(best_chrome.assignments, problem, collect_details=True)
+
     # Determine status
     if final_eval.is_optimal:
         status = "OPTIMAL"
@@ -58,10 +62,36 @@ def generate_timetable(
     else:
         status = "BEST_AVAILABLE"
 
-    # Build conflict diagnostics report
+    # Calculate normalized Schedule Quality / Fitness Score (0.0 to 1.0)
+    total_occ = max(1, problem.total_occurrences)
+    total_students = (
+        sum(o.expected_students for o in problem.occurrences)
+        if problem.occurrences
+        else (50 * total_occ)
+    )
+    if total_students == 0:
+        total_students = 50 * total_occ
+
+    hard_conflicts = final_eval.hard_conflicts
+    cap_penalty = final_eval.capacity_penalty
+
+    if hard_conflicts == 0:
+        # 100% hard constraints satisfied: score ranges between 90% and 100% based on room capacity fit
+        capacity_fit = max(0.0, 1.0 - (cap_penalty / max(1, total_students * 1.5)))
+        quality_score = 0.90 + (0.10 * capacity_fit)
+    else:
+        # Scale down based on hard conflict proportion
+        hard_factor = max(0.0, 1.0 - (hard_conflicts / total_occ))
+        capacity_factor = max(0.0, 1.0 - (cap_penalty / max(1, total_students * 2.0)))
+        quality_score = max(0.0, 0.85 * hard_factor + 0.05 * capacity_factor)
+
+    quality_score = round(quality_score, 4)
+
+    # Build conflict diagnostics report with full breakdown
     conflict_report = generate_conflict_report(
         final_eval,
         total_occurrences=problem.total_occurrences,
+        quality_score=quality_score,
     )
 
     # Build serializable assignments payload
@@ -92,7 +122,7 @@ def generate_timetable(
     return GenerationResult(
         status=status,
         assignments=best_chrome.assignments,
-        fitness=final_eval.fitness,
+        fitness=quality_score,
         evaluation=final_eval,
         conflict_report=conflict_report,
         generation_count=gens_run,
