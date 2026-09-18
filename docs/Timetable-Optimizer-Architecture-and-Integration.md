@@ -72,7 +72,7 @@ participant Publisher as Publishing Service
 
     critical ATOMIC TRANSACTION
         Publisher->>DB: 1. Delete previous scoped TimetableEntries for semester
-        Publisher->>DB: "2. Create recurring TimetableEntry records (RRULE:FREQ=WEEKLY;BYDAY=...)"
+        Publisher->>DB: 2. Create recurring TimetableEntry records (RRULE:FREQ=WEEKLY;BYDAY=...)
         Publisher->>DB: 3. Materialize LectureSession instances across semester weeks
         Publisher->>DB: 4. Mark TimetableGenerationRun.is_published = True
     end
@@ -467,12 +467,12 @@ python manage.py generate_timetable --semester 1 --scope-type school --scope-id 
 
 The optimizer and its integration endpoints are covered by 25 unit and integration tests:
 
-| Test File                                                                                                                                          | Test Scope                                                                                         |
-| -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| [`test_optimizer_slots.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/tests/test_optimizer_slots.py)             | Verifies the 24 academic slot generation and strict Friday Jummat exclusion (`12:00–14:00`).       |
-| [`test_optimizer_constraints.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/tests/test_optimizer_constraints.py) | Tests all 6 constraints independently against constructed clash and edge scenarios.                |
-| [`test_optimizer_ga.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/tests/test_optimizer_ga.py)                   | Tests convergence on solvable instances and graceful fallback on overconstrained instances.        |
-| [`test_generation_api.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/tests/test_generation_api.py)               | Tests permission enforcement, request payload aliasing, conflict diagnostics, and live publishing. |
+| Test File                                                                                              | Test Scope                                                                                         |
+| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| [`test_optimizer_slots.py`](TimeMap_backend/core/scheduling/tests/test_optimizer_slots.py)             | Verifies the 24 academic slot generation and strict Friday Jummat exclusion (`12:00–14:00`).       |
+| [`test_optimizer_constraints.py`](TimeMap_backend/core/scheduling/tests/test_optimizer_constraints.py) | Tests all 6 constraints independently against constructed clash and edge scenarios.                |
+| [`test_optimizer_ga.py`](TimeMap_backend/core/scheduling/tests/test_optimizer_ga.py)                   | Tests convergence on solvable instances and graceful fallback on overconstrained instances.        |
+| [`test_generation_api.py`](TimeMap_backend/core/scheduling/tests/test_generation_api.py)               | Tests permission enforcement, request payload aliasing, conflict diagnostics, and live publishing. |
 
 Run tests via pytest:
 

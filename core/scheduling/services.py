@@ -1,6 +1,6 @@
 import datetime
 from django.db import transaction
-from .models import LectureSession, TimetableEntry
+from .models import LectureSession
 
 
 WEEKDAY_MAP = {

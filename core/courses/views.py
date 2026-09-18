@@ -20,7 +20,10 @@ from .serializers import (
     CourseRegistrationSerializer,
     CourseSerializer,
 )
-from .services import get_visible_courses_for_student
+from .services import (
+    annotate_courses_with_student_counts,
+    get_visible_courses_for_student,
+)
 
 
 class CourseViewSet(viewsets.ModelViewSet):
@@ -29,19 +32,21 @@ class CourseViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        base_qs = None
+
         if user.role == "student" and hasattr(user, "student_profile"):
-            return get_visible_courses_for_student(user.student_profile)
+            base_qs = get_visible_courses_for_student(user.student_profile)
 
-        if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
-            return Course.objects.all()
+        elif user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+            base_qs = Course.objects.all()
 
-        if user.role == "admin" and hasattr(user, "admin_profile"):
+        elif user.role == "admin" and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
             level = admin_prof.level
 
             if level in ["university", "school"]:
                 # System level & School level can view all courses
-                return Course.objects.all()
+                base_qs = Course.objects.all()
 
             elif level == "faculty":
                 if not admin_prof.scope_faculty:
@@ -55,7 +60,7 @@ class CourseViewSet(viewsets.ModelViewSet):
                     | Q(course__owning_department__faculty=admin_prof.scope_faculty)
                 ).values_list("course_id", flat=True)
 
-                return Course.objects.filter(
+                base_qs = Course.objects.filter(
                     Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty=admin_prof.scope_faculty)
                     | Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department__faculty=admin_prof.scope_faculty)
                     | Q(id__in=granted_course_ids)
@@ -75,25 +80,57 @@ class CourseViewSet(viewsets.ModelViewSet):
                     | Q(id__in=granted_course_ids)
                 ).distinct()
 
-            semester_param = self.request.query_params.get("semester")
-            if semester_param:
-                base_qs = base_qs.filter(semester_id=semester_param)
-            program_param = self.request.query_params.get("program")
-            if program_param:
-                base_qs = base_qs.filter(
-                    Q(target_program_id=program_param)
-                    | Q(program_scope="general")
-                )
-            return base_qs
+        if base_qs is None:
+            return Course.objects.none()
 
-        return Course.objects.none()
+        semester_param = self.request.query_params.get("semester")
+        if semester_param:
+            base_qs = base_qs.filter(semester_id=semester_param)
+        program_param = self.request.query_params.get("program")
+        if program_param:
+            base_qs = base_qs.filter(
+                Q(target_program_id=program_param)
+                | Q(program_scope="general")
+            )
+
+        return base_qs.select_related(
+            "owning_department",
+            "owning_faculty",
+            "owning_school",
+            "target_program",
+            "semester",
+            "semester__session",
+        ).prefetch_related(
+            "lecturers",
+            "access_grants",
+            "access_grants__target_program",
+            "access_grants__granted_to_department",
+            "access_grants__granted_to_faculty",
+            "access_grants__granted_to_school",
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            annotate_courses_with_student_counts(page)
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        courses = list(queryset)
+        annotate_courses_with_student_counts(courses)
+        serializer = self.get_serializer(courses, many=True)
+        return Response(serializer.data)
 
     @extend_schema(summary="Get courses visible to authenticated student", responses={200: CourseSerializer(many=True)})
     @action(detail=False, methods=["get"], url_path="visible-to-me")
     def visible_to_me(self, request):
         if hasattr(request.user, "student_profile"):
             qs = get_visible_courses_for_student(request.user.student_profile)
-            serializer = self.get_serializer(qs, many=True)
+            courses = list(qs)
+            annotate_courses_with_student_counts(courses)
+            serializer = self.get_serializer(courses, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response({"detail": "Only students have a visible course list."}, status=status.HTTP_400_BAD_REQUEST)
 
