@@ -3,7 +3,7 @@ from hierarchy.models import Department, Faculty, School
 from rest_framework import serializers
 
 from .models import Course, CourseAccessGrant, CourseRegistration
-from .services import get_visible_courses_for_student
+from .services import calculate_course_student_count, get_visible_courses_for_student
 
 
 class CourseSerializer(serializers.ModelSerializer):
@@ -45,7 +45,9 @@ class CourseSerializer(serializers.ModelSerializer):
         read_only_fields = ("id",)
 
     def get_registration_count(self, obj):
-        return obj.student_registrations.count()
+        if hasattr(obj, "_cached_registration_count"):
+            return obj._cached_registration_count
+        return calculate_course_student_count(obj)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -68,6 +70,18 @@ class CourseSerializer(serializers.ModelSerializer):
                     data["owning_school"] = fac.school.id
                 if not data.get("owning_school_name"):
                     data["owning_school_name"] = fac.school.name
+
+        data["lecturers_details"] = [
+            {
+                "id": lec.id,
+                "staff_id": lec.staff_id,
+                "name": lec.full_name,
+                "email": lec.email or "",
+                "department_id": lec.department_id,
+                "department_name": lec.department.name if lec.department else "",
+            }
+            for lec in instance.lecturers.all()
+        ]
         return data
 
     def validate_code(self, value):

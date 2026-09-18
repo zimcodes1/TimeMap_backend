@@ -1,7 +1,6 @@
 import random
 from typing import Tuple
 
-from ..models.assignment import Assignment
 from .chromosome import Chromosome
 
 

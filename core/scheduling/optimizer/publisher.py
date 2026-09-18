@@ -1,7 +1,7 @@
 from typing import Any, Dict
 from django.db import transaction
 
-from ..models import LectureSession, Semester, TimetableEntry, TimetableGenerationRun
+from ..models import LectureSession, TimetableEntry, TimetableGenerationRun
 from ..services import materialize_timetable_entry
 
 DAY_CODE_TO_NAME = {
