@@ -10,3 +10,4 @@ wheels/
 .venv
 uv.lock
 core/db.sqlite3
+core/scheduling/management/commands/seed_fnas_timetable_data.py

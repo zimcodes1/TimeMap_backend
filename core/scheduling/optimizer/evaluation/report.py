@@ -6,6 +6,7 @@ from .evaluator import EvaluationResult
 def generate_conflict_report(
     evaluation: EvaluationResult,
     total_occurrences: int,
+    quality_score: float | None = None,
 ) -> Dict[str, Any]:
     """
     Builds a comprehensive, human-readable conflict diagnostics report
@@ -21,6 +22,8 @@ def generate_conflict_report(
     occurrence_day_violations = [d for d in evaluation.conflict_details if d.get("type") == "occurrence_day_violation"]
     capacity_overflows = [d for d in evaluation.conflict_details if d.get("type") == "capacity_overflow"]
 
+    effective_quality = quality_score if quality_score is not None else round(evaluation.fitness, 4)
+
     return {
         "status": status_label,
         "is_feasible": evaluation.is_feasible,
@@ -33,7 +36,9 @@ def generate_conflict_report(
             "daily_limit_violations": evaluation.daily_limit_violations,
             "occurrence_day_violations": evaluation.occurrence_day_violations,
             "capacity_penalty": evaluation.capacity_penalty,
-            "fitness_score": round(evaluation.fitness, 6),
+            "fitness_score": round(effective_quality, 4),
+            "quality_percentage": round(effective_quality * 100, 1),
+            "raw_fitness": round(evaluation.fitness, 6),
         },
         "details": {
             "student_conflicts": student_conflicts,
@@ -42,6 +47,14 @@ def generate_conflict_report(
             "daily_limit_violations": daily_limit_violations,
             "occurrence_day_violations": occurrence_day_violations,
             "capacity_overflows": capacity_overflows,
+            "capacity_violations": capacity_overflows,
         },
+        "student_conflicts": student_conflicts,
+        "lecturer_conflicts": lecturer_conflicts,
+        "venue_conflicts": venue_conflicts,
+        "daily_limit_violations": daily_limit_violations,
+        "occurrence_day_violations": occurrence_day_violations,
+        "capacity_overflows": capacity_overflows,
+        "capacity_violations": capacity_overflows,
     }
 
