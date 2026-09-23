@@ -29,6 +29,9 @@ def expand_occurrences(courses: List[CourseData]) -> List[CourseOccurrence]:
                     allowed_venue_ids=course.allowed_venue_ids,
                     course_type=course.course_type,
                     expected_students=course.expected_students,
+                    department_id=course.department_id,
+                    department_name=course.department_name,
+                    level=course.level,
                 )
             )
 

@@ -23,6 +23,9 @@ class CourseOccurrence:
     allowed_venue_ids: Tuple[int | str, ...] = field(default_factory=tuple)
     course_type: str = "lecture"
     expected_students: int = 50
+    department_id: int | str = ""
+    department_name: str = ""
+    level: int = 100
 
     @property
     def is_practical(self) -> bool:

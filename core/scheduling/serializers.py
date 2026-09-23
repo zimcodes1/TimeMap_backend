@@ -373,6 +373,7 @@ class TimetableGenerationRunSerializer(serializers.ModelSerializer):
             "occurrence_day_violations_count",
             "capacity_penalty",
             "fitness_score",
+            "generation_metrics",
             "is_published",
             "initiated_by",
             "initiated_by_name",
@@ -386,7 +387,6 @@ class TimetableGenerationRunDetailSerializer(TimetableGenerationRunSerializer):
     class Meta(TimetableGenerationRunSerializer.Meta):
         fields = TimetableGenerationRunSerializer.Meta.fields + (
             "conflict_report",
-            "generation_metrics",
             "assignments_payload",
         )
 
