@@ -48,3 +48,7 @@ class SchedulingProblem:
     def total_occurrences(self) -> int:
         return len(self.occurrences)
 
+    @property
+    def lecturers(self) -> Dict[int | str, LecturerData]:
+        return self.lecturer_details
+

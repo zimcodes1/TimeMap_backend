@@ -116,6 +116,27 @@ def generate_timetable(
                 "venue_id": a.venue_id,
                 "venue_name": venue_name,
                 "expected_students": a.occurrence.expected_students,
+                "department_id": a.occurrence.department_id,
+                "department_name": a.occurrence.department_name,
+                "level": a.occurrence.level,
+                "programs": [
+                    {
+                        "id": g.program_id,
+                        "code": g.program_code,
+                        "name": g.program_name,
+                        "level": g.level,
+                    }
+                    for g in a.occurrence.student_groups
+                ],
+                "program_ids": [g.program_id for g in a.occurrence.student_groups],
+                "program_names": [g.display_name for g in a.occurrence.student_groups],
+                "lecturers": [
+                    problem.lecturers[lid].name
+                    if (getattr(problem, "lecturers", None) and lid in problem.lecturers)
+                    else f"Staff #{lid}"
+                    for lid in a.occurrence.lecturer_ids
+                ],
+                "lecturer_ids": list(a.occurrence.lecturer_ids),
             }
         )
 

@@ -153,6 +153,7 @@ def build_scheduling_problem_from_db(
                 title=c.title,
                 level=c.level,
                 department_id=c.owning_department_id or "",
+                department_name=c.owning_department.name if c.owning_department else "",
                 required_occurrences=c.required_occurrences_per_week or 1,
                 course_type=c.course_type or "lecture",
                 student_groups=tuple(groups),

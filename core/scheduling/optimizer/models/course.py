@@ -15,6 +15,7 @@ class CourseData:
     title: str
     level: int
     department_id: int | str
+    department_name: str = ""
     required_occurrences: int = 1
     course_type: str = "lecture"  # "lecture" or "practical"
     student_groups: Tuple[StudentGroup, ...] = field(default_factory=tuple)

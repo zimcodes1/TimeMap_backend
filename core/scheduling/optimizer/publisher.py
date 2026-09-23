@@ -1,5 +1,5 @@
 from typing import Any, Dict
-from django.db import transaction
+from django.db import models, transaction
 
 from ..models import LectureSession, TimetableEntry, TimetableGenerationRun
 from ..services import materialize_timetable_entry
@@ -98,7 +98,27 @@ def publish_generation_run(
         created_entries_count += 1
         total_sessions_count += len(sessions)
 
-    # 3. Mark generation run as published
+    # 3. Unpublish previous runs in this scope and semester so only one live run exists
+    previous_published = TimetableGenerationRun.objects.filter(
+        semester=semester,
+        is_published=True,
+    ).exclude(id=generation_run.id)
+
+    if scope_type == "school":
+        previous_published.update(is_published=False)
+    elif scope_type == "faculty":
+        from hierarchy.models import Department
+        dept_ids = list(Department.objects.filter(faculty_id=scope_id).values_list("id", flat=True))
+        previous_published.filter(
+            models.Q(scope_type="faculty", scope_id=scope_id)
+            | models.Q(scope_type="department", scope_id__in=dept_ids)
+        ).update(is_published=False)
+    elif scope_type == "department":
+        previous_published.filter(
+            scope_type="department",
+            scope_id=scope_id,
+        ).update(is_published=False)
+
     generation_run.is_published = True
     generation_run.save(update_fields=["is_published"])
 
