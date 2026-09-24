@@ -1,3 +1,5 @@
+import datetime
+from django.utils import timezone
 from courses.models import CourseRegistration
 from discrepancies.models import DiscrepancyRequest
 from rest_framework import serializers
@@ -438,7 +440,22 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             report = obj.report
             return "held" if report.held else "not_held"
         except Exception:
+            pass
+
+        if obj.status == LectureSession.Status.HELD:
+            return "held"
+        if obj.status == LectureSession.Status.NOT_HELD:
+            return "not_held"
+
+        # A schedule isn't unreported until after the datetime for it has past
+        now = timezone.now()
+        dt = datetime.datetime.combine(obj.session_date, obj.session_end_time)
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt)
+
+        if dt <= now:
             return "unreported"
+        return "scheduled"
 
 
 class ExamSittingSerializer(serializers.ModelSerializer):
