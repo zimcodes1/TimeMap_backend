@@ -111,7 +111,12 @@ class AnalyticsViewSet(viewsets.ViewSet):
             start_date=request.query_params.get("start_date"),
             end_date=request.query_params.get("end_date"),
             department_id=request.query_params.get("department_id"),
+            faculty_id=request.query_params.get("faculty_id"),
             course_id=request.query_params.get("course_id"),
+            level=request.query_params.get("level"),
+            program_id=request.query_params.get("program_id"),
+            lecturer_id=request.query_params.get("lecturer_id"),
+            semester_id=request.query_params.get("semester_id"),
             group_by=request.query_params.get("group_by", "course"),
         )
         return Response(data, status=status.HTTP_200_OK)
@@ -124,6 +129,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
             user=request.user,
             start_date=request.query_params.get("start_date"),
             end_date=request.query_params.get("end_date"),
+            department_id=request.query_params.get("department_id"),
             venue_id=request.query_params.get("venue_id"),
             group_by=request.query_params.get("group_by", "venue"),
         )

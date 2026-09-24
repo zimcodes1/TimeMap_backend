@@ -14,13 +14,25 @@ from .models import ClassRepReport
 
 
 def get_lecture_hold_rate_analytics(
-    user, start_date=None, end_date=None, department_id=None, course_id=None, group_by="week"
+    user,
+    start_date=None,
+    end_date=None,
+    department_id=None,
+    faculty_id=None,
+    course_id=None,
+    level=None,
+    program_id=None,
+    lecturer_id=None,
+    semester_id=None,
+    group_by="week",
 ):
     """
     Computes lecture-hold rate analytics across past lecture sessions
     (accounting for held, not held, and unreported sessions)
-    scoped to user authority level and grouped by course, department, day, week, or month.
+    scoped to user authority level and grouped by week, course, program, lecturer, or department.
     """
+    from scheduling.models import Semester
+
     dept_qs = get_user_scope_departments(user)
     fac_qs = get_user_scope_faculties(user)
     sch_qs = get_user_scope_schools(user)
@@ -44,21 +56,52 @@ def get_lecture_hold_rate_analytics(
         sessions = sessions.filter(session_date__gte=start_date)
     if end_date:
         sessions = sessions.filter(session_date__lte=end_date)
+    if semester_id:
+        sessions = sessions.filter(timetable_entry__semester_id=semester_id)
     if department_id:
         sessions = sessions.filter(
             Q(timetable_entry__course__owning_department_id=department_id)
             | Q(venue__owning_department_id=department_id)
         )
+    if faculty_id:
+        sessions = sessions.filter(
+            Q(timetable_entry__course__owning_faculty_id=faculty_id)
+            | Q(timetable_entry__course__owning_department__faculty_id=faculty_id)
+            | Q(venue__owning_faculty_id=faculty_id)
+        )
     if course_id:
         sessions = sessions.filter(timetable_entry__course_id=course_id)
+    if level:
+        sessions = sessions.filter(timetable_entry__course__level=level)
+    if program_id:
+        sessions = sessions.filter(
+            Q(timetable_entry__course__target_program_id=program_id)
+            | (
+                Q(timetable_entry__course__program_scope="general")
+                & Q(timetable_entry__course__owning_department__programs__id=program_id)
+            )
+        )
+    if lecturer_id:
+        sessions = sessions.filter(timetable_entry__course__lecturers__id=lecturer_id)
 
     sessions = sessions.select_related(
         "report",
         "timetable_entry",
         "timetable_entry__course",
         "timetable_entry__course__owning_department",
+        "timetable_entry__course__target_program",
+        "timetable_entry__semester",
         "venue",
-    )
+    ).prefetch_related(
+        "timetable_entry__course__lecturers",
+    ).distinct()
+
+    # Resolve active semester for relative academic week calculation
+    active_semester = None
+    if semester_id:
+        active_semester = Semester.objects.filter(id=semester_id).first()
+    if not active_semester:
+        active_semester = Semester.objects.filter(is_active=True).first()
 
     total_sessions = sessions.count()
     held_count = 0
@@ -90,29 +133,136 @@ def get_lecture_hold_rate_analytics(
         else:
             not_held_count += 1
 
-        # Determine grouping key and label
         course = s.timetable_entry.course if s.timetable_entry else None
         c_code = course.code if course else (s.timetable_entry.title if s.timetable_entry else "N/A")
         c_title = course.title if course else ""
 
-        if group_by == "course":
-            g_key = str(course.id) if course else c_code
-            g_label = c_code
+        # Determine grouping keys and payload
+        if group_by == "lecturer":
+            lecs = list(course.lecturers.all()) if course else []
+            targets = lecs if lecs else [None]
+            for lec in targets:
+                if lec:
+                    g_key = f"lec_{lec.id}"
+                    g_label = lec.full_name
+                    extra_data = {
+                        "lecturer_id": str(lec.id),
+                        "lecturer_name": lec.full_name,
+                        "staff_id": lec.staff_id,
+                        "department_name": lec.department.name if lec.department else "",
+                    }
+                else:
+                    g_key = "unassigned"
+                    g_label = "Unassigned"
+                    extra_data = {
+                        "lecturer_id": "unassigned",
+                        "lecturer_name": "Unassigned Lecturer",
+                        "staff_id": "-",
+                        "department_name": "",
+                    }
+                if g_key not in group_buckets:
+                    group_buckets[g_key] = {
+                        "key": g_key,
+                        "label": g_label,
+                        "course_code": c_code,
+                        "course_title": c_title,
+                        "total_sessions": 0,
+                        "held_count": 0,
+                        "not_held_count": 0,
+                        "unreported_count": 0,
+                        **extra_data,
+                    }
+                bucket = group_buckets[g_key]
+                bucket["total_sessions"] += 1
+                if is_unreported:
+                    bucket["unreported_count"] += 1
+                elif is_held:
+                    bucket["held_count"] += 1
+                else:
+                    bucket["not_held_count"] += 1
+            continue
+
+        elif group_by == "program":
+            prog = course.target_program if course else None
+            if prog:
+                g_key = f"prog_{prog.id}"
+                g_label = f"{prog.code} - {prog.name}"
+                extra_data = {
+                    "program_id": str(prog.id),
+                    "program_name": prog.name,
+                    "program_code": prog.code,
+                }
+            else:
+                g_key = "general"
+                g_label = "General / Core Courses"
+                extra_data = {
+                    "program_id": "general",
+                    "program_name": "General / Departmental Courses",
+                    "program_code": "GEN",
+                }
+
         elif group_by == "department":
             dept = course.owning_department if course else None
-            g_key = str(dept.id) if dept else "other"
-            g_label = dept.code if dept else "General"
+            if dept:
+                g_key = f"dept_{dept.id}"
+                g_label = dept.name
+                extra_data = {
+                    "department_id": str(dept.id),
+                    "department_name": dept.name,
+                    "department_code": dept.code,
+                }
+            else:
+                g_key = "other"
+                g_label = "General / Faculty Courses"
+                extra_data = {
+                    "department_id": "other",
+                    "department_name": "General / Faculty Courses",
+                    "department_code": "GEN",
+                }
+
+        elif group_by == "course":
+            g_key = str(course.id) if course else c_code
+            g_label = f"{c_code} - {c_title}" if c_title else c_code
+            extra_data = {
+                "course_id": str(course.id) if course else "",
+                "course_code": c_code,
+                "course_title": c_title,
+                "level": course.level if course else None,
+            }
+
         elif group_by in ["day", "date"]:
             g_key = s.session_date.isoformat()
             g_label = s.session_date.strftime("%b %d")
+            extra_data = {"date": s.session_date.isoformat()}
+
         elif group_by == "month":
             g_key = s.session_date.strftime("%Y-%m")
             g_label = s.session_date.strftime("%b %Y")
+            extra_data = {"month": s.session_date.strftime("%Y-%m")}
+
         else:
-            # Default "week"
-            year, week_num, _ = s.session_date.isocalendar()
-            g_key = f"{year}-W{week_num:02d}"
-            g_label = f"Wk {week_num}"
+            # Default "week" (calculated relative to semester lecture start)
+            sem = s.timetable_entry.semester or active_semester
+            lec_start = sem.lecture_start_date or sem.start_date if sem else None
+            if lec_start:
+                start_monday = lec_start - datetime.timedelta(days=lec_start.weekday())
+                diff_days = (s.session_date - start_monday).days
+                week_num = max(1, (diff_days // 7) + 1)
+                if sem and sem.duration_value:
+                    week_num = min(week_num, sem.duration_value)
+                w_start = start_monday + datetime.timedelta(days=(week_num - 1) * 7)
+                w_end = w_start + datetime.timedelta(days=6)
+                g_key = f"week_{week_num:02d}"
+                g_label = f"Week {week_num}"
+                extra_data = {
+                    "week_number": week_num,
+                    "date_range": f"{w_start.strftime('%d/%m')} - {w_end.strftime('%d/%m')}",
+                }
+            else:
+                year, week_num, _ = s.session_date.isocalendar()
+                g_key = f"{year}-W{week_num:02d}"
+                g_label = f"Wk {week_num}"
+                extra_data = {"week_number": week_num}
 
         if g_key not in group_buckets:
             group_buckets[g_key] = {
@@ -124,6 +274,7 @@ def get_lecture_hold_rate_analytics(
                 "held_count": 0,
                 "not_held_count": 0,
                 "unreported_count": 0,
+                **extra_data,
             }
 
         bucket = group_buckets[g_key]
@@ -136,17 +287,16 @@ def get_lecture_hold_rate_analytics(
             bucket["not_held_count"] += 1
 
     breakdown = []
-    # Sort buckets chronologically or alphabetically
+    # Sort buckets chronologically by key
     for b in sorted(group_buckets.values(), key=lambda x: x["key"]):
-        tot = b["total_sessions"]
         h = b["held_count"]
         nh = b["not_held_count"]
         reported = h + nh
-        b["hold_rate_percentage"] = round((h / reported) * 100, 2) if reported > 0 else 0.0
+        b["hold_rate_percentage"] = round((h / reported) * 100, 1) if reported > 0 else 0.0
         breakdown.append(b)
 
     total_reported = held_count + not_held_count
-    hold_rate_percentage = round((held_count / total_reported) * 100, 2) if total_reported > 0 else 0.0
+    hold_rate_percentage = round((held_count / total_reported) * 100, 1) if total_reported > 0 else 0.0
 
     return {
         "summary": {
@@ -161,9 +311,12 @@ def get_lecture_hold_rate_analytics(
     }
 
 
-def get_venue_utilization_analytics(user, start_date=None, end_date=None, venue_id=None, group_by="venue"):
+def get_venue_utilization_analytics(
+    user, start_date=None, end_date=None, department_id=None, venue_id=None, group_by="venue"
+):
     """
-    Computes venue utilization hours for lectures across venues in user scope.
+    Computes venue utilization hours for lectures across venues in user scope,
+    optionally narrowed per department.
     """
     dept_qs = get_user_scope_departments(user)
     fac_qs = get_user_scope_faculties(user)
@@ -181,6 +334,8 @@ def get_venue_utilization_analytics(user, start_date=None, end_date=None, venue_
         sessions = sessions.filter(session_date__gte=start_date)
     if end_date:
         sessions = sessions.filter(session_date__lte=end_date)
+    if department_id:
+        sessions = sessions.filter(venue__owning_department_id=department_id)
     if venue_id:
         sessions = sessions.filter(venue_id=venue_id)
 
@@ -193,20 +348,28 @@ def get_venue_utilization_analytics(user, start_date=None, end_date=None, venue_
         hours = max(0.0, (t_end - t_start).total_seconds() / 3600.0)
 
         if v_id not in venue_hours:
-            venue_hours[v_id] = {"venue_id": v_id, "venue_name": v_name, "total_booked_hours": 0.0, "total_sessions": 0}
+            venue_hours[v_id] = {
+                "venue_id": v_id,
+                "venue_name": v_name,
+                "total_booked_hours": 0.0,
+                "total_sessions": 0,
+            }
         venue_hours[v_id]["total_booked_hours"] += hours
         venue_hours[v_id]["total_sessions"] += 1
 
     breakdown = list(venue_hours.values())
     for item in breakdown:
-        item["total_booked_hours"] = round(item["total_booked_hours"], 2)
+        item["total_booked_hours"] = round(item["total_booked_hours"], 1)
+
+    # Sort descending by booked hours
+    breakdown.sort(key=lambda x: x["total_booked_hours"], reverse=True)
 
     total_hours = sum(b["total_booked_hours"] for b in breakdown)
 
     return {
         "summary": {
             "total_venues": len(breakdown),
-            "total_booked_hours": round(total_hours, 2),
+            "total_booked_hours": round(total_hours, 1),
         },
         "breakdown": breakdown,
     }
