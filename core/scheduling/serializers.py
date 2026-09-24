@@ -424,6 +424,14 @@ class LectureSessionSerializer(serializers.ModelSerializer):
         return [l.full_name for l in course.lecturers.all()]
 
     def get_can_shift(self, obj) -> bool:
+        # Past sessions can NEVER be shifted
+        now = timezone.now()
+        dt = datetime.datetime.combine(obj.session_date, obj.session_end_time)
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt)
+        if dt <= now:
+            return False
+
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return False
@@ -433,6 +441,24 @@ class LectureSessionSerializer(serializers.ModelSerializer):
         admin_profile = getattr(user, "admin_profile", None)
         if not admin_profile:
             return False
+
+        from accounts.models import AdminOfficer
+        if admin_profile.level == AdminOfficer.Level.SCHOOL:
+            return True
+
+        course = getattr(obj.timetable_entry, "course", None)
+        if not course:
+            return obj.timetable_entry.created_by_id == admin_profile.id
+
+        if admin_profile.level == AdminOfficer.Level.FACULTY and admin_profile.scope_faculty_id:
+            dept = getattr(course, "owning_department", None)
+            if dept and dept.faculty_id == admin_profile.scope_faculty_id:
+                return True
+
+        if admin_profile.level == AdminOfficer.Level.DEPARTMENT and admin_profile.scope_department_id:
+            if course.owning_department_id == admin_profile.scope_department_id:
+                return True
+
         return obj.timetable_entry.created_by_id == admin_profile.id
 
     def get_report_status(self, obj) -> str:

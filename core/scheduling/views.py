@@ -7,6 +7,7 @@ from accounts.permissions import (
     get_user_scope_schools,
 )
 from django.db.models import Q
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -329,16 +330,40 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
         partial = kwargs.pop("partial", False)
         session = self.get_object()
 
-        # Check jurisdiction: creator admin or superuser
+        # 1. Past sessions can NEVER be shifted
+        now = timezone.now()
+        dt = datetime.datetime.combine(session.session_date, session.session_end_time)
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt)
+        if dt <= now:
+            return Response(
+                {"detail": "Past lectures cannot be shifted or rescheduled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2. Check jurisdiction: scope-level admin, originating creator, or superuser
         admin_profile = getattr(request.user, "admin_profile", None)
-        is_originating_admin = (
-            admin_profile is not None
-            and session.timetable_entry.created_by_id == admin_profile.id
-        )
-        if not (is_originating_admin or request.user.is_superuser):
+        is_authorized = False
+        if request.user.is_superuser:
+            is_authorized = True
+        elif admin_profile:
+            from accounts.models import AdminOfficer
+            if admin_profile.level == AdminOfficer.Level.SCHOOL:
+                is_authorized = True
+            elif session.timetable_entry.created_by_id == admin_profile.id:
+                is_authorized = True
+            elif admin_profile.level == AdminOfficer.Level.FACULTY and admin_profile.scope_faculty_id:
+                dept = getattr(session.timetable_entry.course, "owning_department", None)
+                if dept and dept.faculty_id == admin_profile.scope_faculty_id:
+                    is_authorized = True
+            elif admin_profile.level == AdminOfficer.Level.DEPARTMENT and admin_profile.scope_department_id:
+                if getattr(session.timetable_entry.course, "owning_department_id", None) == admin_profile.scope_department_id:
+                    is_authorized = True
+
+        if not is_authorized:
             return Response(
                 {
-                    "detail": "Only the originating admin who created this schedule has jurisdiction to shift this session instance."
+                    "detail": "You do not have administrative jurisdiction to shift this session instance."
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
