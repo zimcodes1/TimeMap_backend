@@ -92,14 +92,27 @@ class AcademicSessionSerializer(serializers.ModelSerializer):
 
 class TimetableEntrySerializer(serializers.ModelSerializer):
     course_code = serializers.ReadOnlyField(source="course.code")
+    course_title = serializers.ReadOnlyField(source="course.title")
     course_level = serializers.ReadOnlyField(source="course.level")
+    course_type = serializers.ReadOnlyField(source="course.course_type")
+    department_id = serializers.ReadOnlyField(source="course.owning_department_id")
+    department_name = serializers.ReadOnlyField(source="course.owning_department.name")
+    faculty_id = serializers.ReadOnlyField(source="course.owning_department.faculty_id")
+    faculty_name = serializers.ReadOnlyField(source="course.owning_department.faculty.name")
     target_program_id = serializers.ReadOnlyField(source="course.target_program_id")
     target_program_name = serializers.ReadOnlyField(source="course.target_program.name")
     program_scope = serializers.ReadOnlyField(source="course.program_scope")
     venue_name = serializers.ReadOnlyField(source="venue.name")
+    venue_capacity = serializers.ReadOnlyField(source="venue.capacity")
     created_by_name = serializers.ReadOnlyField(source="created_by.full_name")
     semester_name = serializers.ReadOnlyField(source="semester.get_name_display")
     session_label = serializers.ReadOnlyField(source="semester.session.label")
+    day_of_week = serializers.SerializerMethodField()
+    lecturer_name = serializers.SerializerMethodField()
+    lecturers = serializers.SerializerMethodField()
+    expected_students = serializers.SerializerMethodField()
+    has_conflict = serializers.SerializerMethodField()
+    conflict_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = TimetableEntry
@@ -109,14 +122,27 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             "title",
             "course",
             "course_code",
+            "course_title",
             "course_level",
+            "course_type",
+            "department_id",
+            "department_name",
+            "faculty_id",
+            "faculty_name",
             "target_program_id",
             "target_program_name",
             "program_scope",
             "venue",
             "venue_name",
+            "venue_capacity",
+            "day_of_week",
             "start_time",
             "end_time",
+            "lecturer_name",
+            "lecturers",
+            "expected_students",
+            "has_conflict",
+            "conflict_reason",
             "recurrence_rule",
             "recurrence_start_date",
             "recurrence_end_date",
@@ -130,6 +156,110 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             "created_at",
         )
         read_only_fields = ("id", "created_by", "created_at")
+
+    def _get_conflict_info(self, obj):
+        if hasattr(obj, "_cached_conflict_info"):
+            return obj._cached_conflict_info
+
+        info = {"has_conflict": False, "reason": ""}
+        if not obj.venue_id or not obj.recurrence_rule:
+            obj._cached_conflict_info = info
+            return info
+
+        # 1. Venue collision
+        venue_clash = (
+            TimetableEntry.objects.filter(
+                semester_id=obj.semester_id,
+                recurrence_rule=obj.recurrence_rule,
+                venue_id=obj.venue_id,
+                start_time__lt=obj.end_time,
+                end_time__gt=obj.start_time,
+            )
+            .exclude(id=obj.id)
+            .select_related("course")
+            .first()
+        )
+        if venue_clash and venue_clash.course:
+            info["has_conflict"] = True
+            venue_label = obj.venue.name if obj.venue else "Venue"
+            info["reason"] = f"Venue collision with {venue_clash.course.code} at {venue_label}"
+            obj._cached_conflict_info = info
+            return info
+
+        # 2. Lecturer collision
+        if obj.course:
+            lecs = obj.course.lecturers.all()
+            if lecs:
+                lec_clash = (
+                    TimetableEntry.objects.filter(
+                        semester_id=obj.semester_id,
+                        recurrence_rule=obj.recurrence_rule,
+                        course__lecturers__in=lecs,
+                        start_time__lt=obj.end_time,
+                        end_time__gt=obj.start_time,
+                    )
+                    .exclude(id=obj.id)
+                    .select_related("course")
+                    .first()
+                )
+                if lec_clash and lec_clash.course:
+                    lec_name = lecs[0].full_name
+                    info["has_conflict"] = True
+                    info["reason"] = f"Lecturer collision: {lec_name} is double-booked with {lec_clash.course.code}"
+                    obj._cached_conflict_info = info
+                    return info
+
+        obj._cached_conflict_info = info
+        return info
+
+    def get_has_conflict(self, obj) -> bool:
+        return self._get_conflict_info(obj)["has_conflict"]
+
+    def get_conflict_reason(self, obj) -> str:
+        return self._get_conflict_info(obj)["reason"]
+
+    def get_day_of_week(self, obj) -> str:
+        if obj.recurrence_rule and ":" in obj.recurrence_rule:
+            return obj.recurrence_rule.split(":")[-1].strip().capitalize()
+        if obj.recurrence_start_date:
+            return obj.recurrence_start_date.strftime("%A")
+        return "Monday"
+
+    def get_lecturer_name(self, obj) -> str:
+        if not obj.course:
+            return ""
+        first_lec = obj.course.lecturers.first()
+        return first_lec.full_name if first_lec else ""
+
+    def get_lecturers(self, obj) -> list:
+        if not obj.course:
+            return []
+        return [l.full_name for l in obj.course.lecturers.all()]
+
+    def get_expected_students(self, obj) -> int:
+        if not obj.course:
+            return 50
+        try:
+            from student_counts.models import ProgramStudentCount
+            if obj.course.target_program_id:
+                sc = ProgramStudentCount.objects.filter(
+                    program_id=obj.course.target_program_id,
+                    level=obj.course.level,
+                ).first()
+                if sc:
+                    return sc.count
+            elif obj.course.owning_department_id:
+                counts = list(
+                    ProgramStudentCount.objects.filter(
+                        program__department_id=obj.course.owning_department_id,
+                        level=obj.course.level,
+                    ).values_list("count", flat=True)
+                )
+                if counts:
+                    return sum(counts)
+        except Exception:
+            pass
+        return 50
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -214,14 +344,21 @@ class LectureSessionSerializer(serializers.ModelSerializer):
     course_code = serializers.ReadOnlyField(source="timetable_entry.course.code")
     course_title = serializers.ReadOnlyField(source="timetable_entry.course.title")
     course_level = serializers.ReadOnlyField(source="timetable_entry.course.level")
+    department_id = serializers.ReadOnlyField(source="timetable_entry.course.owning_department_id")
     department_name = serializers.ReadOnlyField(source="timetable_entry.course.owning_department.name")
     target_program_id = serializers.ReadOnlyField(source="timetable_entry.course.target_program_id")
     program_name = serializers.ReadOnlyField(source="timetable_entry.course.target_program.name")
     program_code = serializers.ReadOnlyField(source="timetable_entry.course.target_program.code")
     program_scope = serializers.ReadOnlyField(source="timetable_entry.course.program_scope")
     venue_name = serializers.ReadOnlyField(source="venue.name")
+    venue_capacity = serializers.ReadOnlyField(source="venue.capacity")
+    day_of_week = serializers.SerializerMethodField()
+    lecturer_name = serializers.SerializerMethodField()
+    lecturers = serializers.SerializerMethodField()
     can_shift = serializers.SerializerMethodField()
     report_status = serializers.SerializerMethodField()
+    has_conflict = serializers.SerializerMethodField()
+    conflict_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = LectureSession
@@ -233,6 +370,7 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "course_code",
             "course_title",
             "course_level",
+            "department_id",
             "department_name",
             "target_program_id",
             "program_name",
@@ -241,13 +379,47 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "session_date",
             "session_start_time",
             "session_end_time",
+            "day_of_week",
             "venue",
             "venue_name",
+            "venue_capacity",
+            "lecturer_name",
+            "lecturers",
+            "has_conflict",
+            "conflict_reason",
             "status",
             "can_shift",
             "report_status",
         )
         read_only_fields = ("id",)
+
+    def get_has_conflict(self, obj) -> bool:
+        if obj.timetable_entry:
+            return TimetableEntrySerializer().get_has_conflict(obj.timetable_entry)
+        return False
+
+    def get_conflict_reason(self, obj) -> str:
+        if obj.timetable_entry:
+            return TimetableEntrySerializer().get_conflict_reason(obj.timetable_entry)
+        return ""
+
+    def get_day_of_week(self, obj) -> str:
+        if obj.session_date:
+            return obj.session_date.strftime("%A")
+        return "Monday"
+
+    def get_lecturer_name(self, obj) -> str:
+        course = getattr(obj.timetable_entry, "course", None)
+        if not course:
+            return ""
+        first_lec = course.lecturers.first()
+        return first_lec.full_name if first_lec else ""
+
+    def get_lecturers(self, obj) -> list:
+        course = getattr(obj.timetable_entry, "course", None)
+        if not course:
+            return []
+        return [l.full_name for l in course.lecturers.all()]
 
     def get_can_shift(self, obj) -> bool:
         request = self.context.get("request")

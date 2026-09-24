@@ -140,19 +140,51 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
         semester_param = self.request.query_params.get("semester")
         if semester_param:
             qs = qs.filter(semester_id=semester_param)
-        program_param = self.request.query_params.get("program")
-        if program_param:
+        department_param = self.request.query_params.get("department")
+        if department_param:
             qs = qs.filter(
-                Q(course__target_program_id=program_param)
-                | Q(course__program_scope="general")
+                Q(course__owning_department_id=department_param)
+                | Q(course__target_program__department_id=department_param)
             )
+        faculty_param = self.request.query_params.get("faculty")
+        if faculty_param:
+            qs = qs.filter(
+                Q(course__owning_faculty_id=faculty_param)
+                | Q(course__owning_department__faculty_id=faculty_param)
+            )
+        program_param = self.request.query_params.get("program")
+        if program_param and str(program_param).upper() != "ALL":
+            from hierarchy.models import Program
+            prog = Program.objects.filter(id=program_param).first()
+            if prog:
+                qs = qs.filter(
+                    Q(course__target_program_id=program_param)
+                    | Q(course__access_grants__target_program_id=program_param, course__access_grants__status="approved")
+                    | (
+                        Q(course__owning_department_id=prog.department_id)
+                        & (Q(course__target_program_id__isnull=True) | Q(course__target_program_id=program_param))
+                    )
+                    | (
+                        Q(course__owning_level__in=["faculty", "school", "general"])
+                        & (
+                            Q(course__owning_faculty_id=prog.department.faculty_id)
+                            | Q(course__owning_school_id=prog.department.faculty.school_id)
+                            | Q(course__owning_level="general")
+                        )
+                    )
+                )
+            else:
+                qs = qs.filter(
+                    Q(course__target_program_id=program_param)
+                    | Q(course__owning_level__in=["faculty", "school", "general"])
+                )
         level_param = self.request.query_params.get("level")
         if level_param:
             qs = qs.filter(course__level=level_param)
         entry_type_param = self.request.query_params.get("entry_type")
         if entry_type_param:
             qs = qs.filter(entry_type=entry_type_param)
-        return qs
+        return qs.distinct()
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
@@ -244,11 +276,43 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(status=status_param)
         if semester_param:
             qs = qs.filter(timetable_entry__semester_id=semester_param)
-        if program_param:
+        department_param = self.request.query_params.get("department")
+        if department_param:
             qs = qs.filter(
-                Q(timetable_entry__course__target_program_id=program_param)
-                | Q(timetable_entry__course__program_scope="general")
+                Q(timetable_entry__course__owning_department_id=department_param)
+                | Q(timetable_entry__course__target_program__department_id=department_param)
             )
+        faculty_param = self.request.query_params.get("faculty")
+        if faculty_param:
+            qs = qs.filter(
+                Q(timetable_entry__course__owning_faculty_id=faculty_param)
+                | Q(timetable_entry__course__owning_department__faculty_id=faculty_param)
+            )
+        if program_param and str(program_param).upper() != "ALL":
+            from hierarchy.models import Program
+            prog = Program.objects.filter(id=program_param).first()
+            if prog:
+                qs = qs.filter(
+                    Q(timetable_entry__course__target_program_id=program_param)
+                    | Q(timetable_entry__course__access_grants__target_program_id=program_param, timetable_entry__course__access_grants__status="approved")
+                    | (
+                        Q(timetable_entry__course__owning_department_id=prog.department_id)
+                        & (Q(timetable_entry__course__target_program_id__isnull=True) | Q(timetable_entry__course__target_program_id=program_param))
+                    )
+                    | (
+                        Q(timetable_entry__course__owning_level__in=["faculty", "school", "general"])
+                        & (
+                            Q(timetable_entry__course__owning_faculty_id=prog.department.faculty_id)
+                            | Q(timetable_entry__course__owning_school_id=prog.department.faculty.school_id)
+                            | Q(timetable_entry__course__owning_level="general")
+                        )
+                    )
+                )
+            else:
+                qs = qs.filter(
+                    Q(timetable_entry__course__target_program_id=program_param)
+                    | Q(timetable_entry__course__owning_level__in=["faculty", "school", "general"])
+                )
         if level_param:
             qs = qs.filter(timetable_entry__course__level=level_param)
         if entry_type_param:
