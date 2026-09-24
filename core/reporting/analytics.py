@@ -10,6 +10,7 @@ from django.db.models import Case, Count, IntegerField, Q, Sum, When
 from scheduling.models import LectureSession
 from venues.models import Venue
 
+from django.utils import timezone
 from .models import ClassRepReport
 
 
@@ -103,7 +104,7 @@ def get_lecture_hold_rate_analytics(
     if not active_semester:
         active_semester = Semester.objects.filter(is_active=True).first()
 
-    total_sessions = sessions.count()
+    now = timezone.now()
     held_count = 0
     not_held_count = 0
     unreported_count = 0
@@ -111,6 +112,13 @@ def get_lecture_hold_rate_analytics(
     group_buckets = {}
 
     for s in sessions:
+        # Check if the schedule's datetime has already passed
+        session_dt = datetime.datetime.combine(s.session_date, s.session_end_time)
+        if timezone.is_naive(session_dt):
+            session_dt = timezone.make_aware(session_dt)
+
+        is_past = session_dt <= now
+
         # Determine reporting status
         report = getattr(s, "report", None)
         if report:
@@ -122,9 +130,14 @@ def get_lecture_hold_rate_analytics(
         elif s.status == LectureSession.Status.NOT_HELD:
             is_held = False
             is_unreported = False
-        else:
+        elif is_past:
+            # The schedule is in the past and has no report submitted
             is_held = False
             is_unreported = True
+        else:
+            # Future schedule whose datetime has not passed yet:
+            # A schedule isn't unreported until after the datetime for it has passed!
+            continue
 
         if is_unreported:
             unreported_count += 1
@@ -295,13 +308,14 @@ def get_lecture_hold_rate_analytics(
         b["hold_rate_percentage"] = round((h / reported) * 100, 1) if reported > 0 else 0.0
         breakdown.append(b)
 
+    total_past_sessions = held_count + not_held_count + unreported_count
     total_reported = held_count + not_held_count
     hold_rate_percentage = round((held_count / total_reported) * 100, 1) if total_reported > 0 else 0.0
 
     return {
         "summary": {
             "total_reports": total_reported,
-            "total_sessions": total_sessions,
+            "total_sessions": total_past_sessions,
             "held_count": held_count,
             "not_held_count": not_held_count,
             "unreported_count": unreported_count,

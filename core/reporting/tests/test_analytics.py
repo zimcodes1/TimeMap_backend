@@ -104,3 +104,33 @@ class AnalyticsWorkflowTests(APITestCase):
         url = "/api/reporting/analytics/lecture-hold-rate/"
         res = self.client.get(url)
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_future_sessions_not_counted_as_unreported(self):
+        today = datetime.date.today()
+        # 1 past session without a report (should be counted as unreported)
+        LectureSession.objects.create(
+            timetable_entry=self.entry,
+            session_date=today - datetime.timedelta(days=3),
+            session_start_time=datetime.time(8, 0),
+            session_end_time=datetime.time(10, 0),
+            venue=self.venue,
+        )
+        # 1 future session scheduled next week (should NOT be counted as unreported)
+        LectureSession.objects.create(
+            timetable_entry=self.entry,
+            session_date=today + datetime.timedelta(days=5),
+            session_start_time=datetime.time(8, 0),
+            session_end_time=datetime.time(10, 0),
+            venue=self.venue,
+        )
+
+        self.client.force_authenticate(user=self.admin_user)
+        url = "/api/reporting/analytics/lecture-hold-rate/"
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        summary = res.data["summary"]
+        # Only the past session without report is unreported (1), future session is not counted
+        self.assertEqual(summary["unreported_count"], 1)
+        # Total sessions = 1 held + 1 not held + 1 unreported = 3
+        self.assertEqual(summary["total_sessions"], 3)
+
