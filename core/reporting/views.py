@@ -130,6 +130,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
             start_date=request.query_params.get("start_date"),
             end_date=request.query_params.get("end_date"),
             department_id=request.query_params.get("department_id"),
+            faculty_id=request.query_params.get("faculty_id"),
             venue_id=request.query_params.get("venue_id"),
             group_by=request.query_params.get("group_by", "venue"),
         )

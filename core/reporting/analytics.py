@@ -42,9 +42,6 @@ def get_lecture_hold_rate_analytics(
         Q(timetable_entry__course__owning_department__in=dept_qs)
         | Q(timetable_entry__course__owning_faculty__in=fac_qs)
         | Q(timetable_entry__course__owning_school__in=sch_qs)
-        | Q(venue__owning_department__in=dept_qs)
-        | Q(venue__owning_faculty__in=fac_qs)
-        | Q(venue__owning_school__in=sch_qs)
     ).exclude(
         status__in=[LectureSession.Status.CANCELLED, LectureSession.Status.POSTPONED]
     ).distinct()
@@ -61,14 +58,12 @@ def get_lecture_hold_rate_analytics(
         sessions = sessions.filter(timetable_entry__semester_id=semester_id)
     if department_id:
         sessions = sessions.filter(
-            Q(timetable_entry__course__owning_department_id=department_id)
-            | Q(venue__owning_department_id=department_id)
+            timetable_entry__course__owning_department_id=department_id
         )
     if faculty_id:
         sessions = sessions.filter(
             Q(timetable_entry__course__owning_faculty_id=faculty_id)
             | Q(timetable_entry__course__owning_department__faculty_id=faculty_id)
-            | Q(venue__owning_faculty_id=faculty_id)
         )
     if course_id:
         sessions = sessions.filter(timetable_entry__course_id=course_id)
@@ -90,6 +85,7 @@ def get_lecture_hold_rate_analytics(
         "timetable_entry",
         "timetable_entry__course",
         "timetable_entry__course__owning_department",
+        "timetable_entry__course__owning_faculty",
         "timetable_entry__course__target_program",
         "timetable_entry__semester",
         "venue",
@@ -110,6 +106,64 @@ def get_lecture_hold_rate_analytics(
     unreported_count = 0
 
     group_buckets = {}
+
+    # Pre-initialize buckets for hierarchical groups so all entities appear
+    if group_by == "faculty":
+        from hierarchy.models import Faculty
+        target_facs = fac_qs if fac_qs.exists() else Faculty.objects.filter(school__in=sch_qs)
+        for f in target_facs:
+            g_key = f"fac_{f.id}"
+            group_buckets[g_key] = {
+                "key": g_key,
+                "label": f.name,
+                "faculty_id": str(f.id),
+                "faculty_name": f.name,
+                "faculty_code": f.code,
+                "total_sessions": 0,
+                "held_count": 0,
+                "not_held_count": 0,
+                "unreported_count": 0,
+            }
+    elif group_by == "department":
+        from hierarchy.models import Department
+        target_depts = Department.objects.filter(id__in=dept_qs.values_list("id", flat=True))
+        if faculty_id:
+            target_depts = target_depts.filter(faculty_id=faculty_id)
+        for d in target_depts:
+            g_key = f"dept_{d.id}"
+            group_buckets[g_key] = {
+                "key": g_key,
+                "label": d.name,
+                "department_id": str(d.id),
+                "department_name": d.name,
+                "department_code": d.code,
+                "total_sessions": 0,
+                "held_count": 0,
+                "not_held_count": 0,
+                "unreported_count": 0,
+            }
+    elif group_by == "program":
+        from hierarchy.models import Program
+        dept_ids = []
+        if department_id:
+            dept_ids = [department_id]
+        elif dept_qs.exists():
+            dept_ids = list(dept_qs.values_list("id", flat=True))
+
+        target_progs = Program.objects.filter(department_id__in=dept_ids) if dept_ids else Program.objects.none()
+        for p in target_progs:
+            g_key = f"prog_{p.id}"
+            group_buckets[g_key] = {
+                "key": g_key,
+                "label": f"{p.code} - {p.name}",
+                "program_id": str(p.id),
+                "program_name": p.name,
+                "program_code": p.code,
+                "total_sessions": 0,
+                "held_count": 0,
+                "not_held_count": 0,
+                "unreported_count": 0,
+            }
 
     for s in sessions:
         # Check if the schedule's datetime has already passed
@@ -135,8 +189,7 @@ def get_lecture_hold_rate_analytics(
             is_held = False
             is_unreported = True
         else:
-            # Future schedule whose datetime has not passed yet:
-            # A schedule isn't unreported until after the datetime for it has passed!
+            # Future schedule whose datetime has not passed yet
             continue
 
         if is_unreported:
@@ -195,8 +248,42 @@ def get_lecture_hold_rate_analytics(
                     bucket["not_held_count"] += 1
             continue
 
+        elif group_by == "faculty":
+            fac = None
+            if course:
+                fac = course.owning_faculty or (course.owning_department.faculty if course.owning_department else None)
+            if fac:
+                g_key = f"fac_{fac.id}"
+                g_label = fac.name
+                extra_data = {
+                    "faculty_id": str(fac.id),
+                    "faculty_name": fac.name,
+                    "faculty_code": fac.code,
+                }
+            else:
+                g_key = "general"
+                g_label = "General / School Courses"
+                extra_data = {
+                    "faculty_id": "general",
+                    "faculty_name": "General / School Courses",
+                    "faculty_code": "GEN",
+                }
+
         elif group_by == "program":
             prog = course.target_program if course else None
+            if not prog and course and course.owning_department_id:
+                dept_programs = list(course.owning_department.programs.all())
+                c_code_clean = (course.code or "").upper().replace("-", "")
+                for p in dept_programs:
+                    p_prefix = p.code.upper().replace("GEN", "")
+                    if p_prefix and (c_code_clean.startswith(p_prefix) or p_prefix in c_code_clean):
+                        prog = p
+                        break
+                if not prog:
+                    dept_code = (course.owning_department.code or "").upper()
+                    if c_code_clean.startswith(dept_code) or c_code_clean.startswith("COS") or c_code_clean.startswith("CSC"):
+                        prog = next((p for p in dept_programs if p.is_default), dept_programs[0] if dept_programs else None)
+
             if prog:
                 g_key = f"prog_{prog.id}"
                 g_label = f"{prog.code} - {prog.name}"
@@ -210,7 +297,7 @@ def get_lecture_hold_rate_analytics(
                 g_label = "General / Core Courses"
                 extra_data = {
                     "program_id": "general",
-                    "program_name": "General / Departmental Courses",
+                    "program_name": "General / Core Courses",
                     "program_code": "GEN",
                 }
 
@@ -326,11 +413,17 @@ def get_lecture_hold_rate_analytics(
 
 
 def get_venue_utilization_analytics(
-    user, start_date=None, end_date=None, department_id=None, venue_id=None, group_by="venue"
+    user,
+    start_date=None,
+    end_date=None,
+    department_id=None,
+    faculty_id=None,
+    venue_id=None,
+    group_by="venue",
 ):
     """
     Computes venue utilization hours for lectures across venues in user scope,
-    optionally narrowed per department.
+    optionally narrowed per department or grouped per faculty.
     """
     dept_qs = get_user_scope_departments(user)
     fac_qs = get_user_scope_faculties(user)
@@ -342,16 +435,76 @@ def get_venue_utilization_analytics(
         | Q(venue__owning_school__in=sch_qs)
     ).exclude(
         status__in=[LectureSession.Status.CANCELLED, LectureSession.Status.POSTPONED]
+    ).select_related(
+        "venue",
+        "venue__owning_department",
+        "venue__owning_faculty",
+        "venue__owning_department__faculty",
     )
 
     if start_date:
         sessions = sessions.filter(session_date__gte=start_date)
     if end_date:
         sessions = sessions.filter(session_date__lte=end_date)
+    if faculty_id:
+        sessions = sessions.filter(
+            Q(venue__owning_faculty_id=faculty_id)
+            | Q(venue__owning_department__faculty_id=faculty_id)
+        )
     if department_id:
         sessions = sessions.filter(venue__owning_department_id=department_id)
     if venue_id:
         sessions = sessions.filter(venue_id=venue_id)
+
+    if group_by == "faculty":
+        from hierarchy.models import Faculty
+        faculty_hours = {}
+        # Pre-initialize faculties in scope so all faculties appear
+        target_facs = fac_qs if fac_qs.exists() else Faculty.objects.filter(school__in=sch_qs)
+        for f in target_facs:
+            faculty_hours[str(f.id)] = {
+                "faculty_id": str(f.id),
+                "faculty_name": f.name,
+                "faculty_code": f.code,
+                "total_booked_hours": 0.0,
+                "total_sessions": 0,
+            }
+
+        for s in sessions:
+            fac = s.venue.owning_faculty or (
+                s.venue.owning_department.faculty if s.venue.owning_department else None
+            )
+            fac_id = str(fac.id) if fac else "other"
+            fac_name = fac.name if fac else "General / School Venues"
+            t_start = datetime.datetime.combine(s.session_date, s.session_start_time)
+            t_end = datetime.datetime.combine(s.session_date, s.session_end_time)
+            hours = max(0.0, (t_end - t_start).total_seconds() / 3600.0)
+
+            if fac_id not in faculty_hours:
+                faculty_hours[fac_id] = {
+                    "faculty_id": fac_id,
+                    "faculty_name": fac_name,
+                    "faculty_code": fac.code if fac else "GEN",
+                    "total_booked_hours": 0.0,
+                    "total_sessions": 0,
+                }
+            faculty_hours[fac_id]["total_booked_hours"] += hours
+            faculty_hours[fac_id]["total_sessions"] += 1
+
+        breakdown = list(faculty_hours.values())
+        for item in breakdown:
+            item["total_booked_hours"] = round(item["total_booked_hours"], 1)
+
+        breakdown.sort(key=lambda x: x["total_booked_hours"], reverse=True)
+        total_hours = sum(b["total_booked_hours"] for b in breakdown)
+
+        return {
+            "summary": {
+                "total_faculties": len(breakdown),
+                "total_booked_hours": round(total_hours, 1),
+            },
+            "breakdown": breakdown,
+        }
 
     venue_hours = {}
     for s in sessions:
