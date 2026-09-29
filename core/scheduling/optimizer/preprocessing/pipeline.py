@@ -114,13 +114,23 @@ def build_scheduling_problem_from_db(
                     groups.add(StudentGroup(prog.id, c.level, prog.code, prog.name))
 
         # Check approved access grants
+        receiving_dept_ids: Set[int | str] = set()
         for grant in c.access_grants.filter(status="approved"):
             if grant.target_program:
                 gp = grant.target_program
                 groups.add(StudentGroup(gp.id, c.level, gp.code, gp.name))
+                if gp.department_id:
+                    receiving_dept_ids.add(gp.department_id)
             elif grant.granted_to_department_id:
+                receiving_dept_ids.add(grant.granted_to_department_id)
                 for prog in depts_programs.get(grant.granted_to_department_id, []):
                     groups.add(StudentGroup(prog.id, c.level, prog.code, prog.name))
+
+        # Check any student groups belonging to other departments (cohort sharing)
+        for g in groups:
+            prog_obj = programs_map.get(g.program_id)
+            if prog_obj and prog_obj.department_id and c.owning_department_id and prog_obj.department_id != c.owning_department_id:
+                receiving_dept_ids.add(prog_obj.department_id)
 
         # Fallback if no specific program is registered
         if not groups:
@@ -146,6 +156,19 @@ def build_scheduling_problem_from_db(
                 )
         lecturers_by_course[c.id] = lecturer_ids_set
 
+        course_fac_id = c.owning_faculty_id or (c.owning_department.faculty_id if c.owning_department else None)
+        course_sch_id = c.owning_school_id or (
+            c.owning_faculty.school_id if c.owning_faculty else (
+                c.owning_department.faculty.school_id if c.owning_department and c.owning_department.faculty else None
+            )
+        )
+
+        is_general = (
+            c.owning_level == Course.OwningLevel.GENERAL
+            or (scope_type == "faculty" and c.owning_level == Course.OwningLevel.FACULTY and c.program_scope == Course.ProgramScope.GENERAL)
+            or (scope_type == "school" and c.owning_level in (Course.OwningLevel.SCHOOL, Course.OwningLevel.GENERAL))
+        )
+
         courses_data.append(
             CourseData(
                 id=c.id,
@@ -159,10 +182,23 @@ def build_scheduling_problem_from_db(
                 student_groups=tuple(groups),
                 lecturer_ids=tuple(lecturer_ids_set),
                 expected_students=total_students,
+                owning_level=c.owning_level or "department",
+                faculty_id=course_fac_id,
+                school_id=course_sch_id,
+                receiving_department_ids=tuple(receiving_dept_ids),
+                is_general=is_general,
             )
         )
 
-    # 6. Load venues in scope
+    # Collect all receiving departments from courses in scope so their venues can be loaded if needed
+    all_receiving_dept_ids: Set[int | str] = set()
+    for cd in courses_data:
+        all_receiving_dept_ids.update(cd.receiving_department_ids)
+
+    # 6. Load venues in scope according to the access model:
+    # V(S, D) = V_dept(D) U V_faculty(F(D)) U V_school (plus V_dept(D_recv) for shared courses)
+    # V(S, F) = U_{D in F} V_dept(D) U V_faculty(F) U V_school
+    # V(S, School) = V_school U U_F V_faculty(F) U U_D V_dept(D)
     venue_filter = Q(is_active=True)
     if scope_type == "school":
         venue_filter &= (
@@ -171,25 +207,58 @@ def build_scheduling_problem_from_db(
             | Q(owning_level="department", owning_department__faculty__school_id=scope_id)
         )
     elif scope_type == "faculty":
-        venue_filter &= (
-            Q(owning_level="faculty", owning_faculty_id=scope_id)
-            | Q(owning_level="department", owning_department__faculty_id=scope_id)
-        )
-    elif scope_type == "department":
-        dept = Department.objects.filter(id=scope_id).first()
-        venue_filter &= (
-            Q(owning_department_id=scope_id)
-            | Q(owning_level="faculty", owning_faculty_id=dept.faculty_id if dept else None)
-        )
+        fac = Faculty.objects.filter(id=scope_id).first()
+        school_id = fac.school_id if fac else None
 
-    venues_qs = Venue.objects.filter(venue_filter).distinct()
+        dept_venues_q = Q(owning_level="department", owning_department__faculty_id=scope_id)
+        if all_receiving_dept_ids:
+            dept_venues_q |= Q(owning_level="department", owning_department_id__in=all_receiving_dept_ids)
+
+        faculty_venues_q = Q(owning_level="faculty", owning_faculty_id=scope_id, owning_department__isnull=True)
+        school_venues_q = Q(owning_level="school", owning_department__isnull=True)
+        if school_id:
+            school_venues_q &= (Q(owning_school_id=school_id) | Q(owning_school__isnull=True))
+
+        venue_filter &= (dept_venues_q | faculty_venues_q | school_venues_q)
+
+    elif scope_type == "department":
+        dept = Department.objects.filter(id=scope_id).select_related("faculty__school").first()
+        faculty_id = dept.faculty_id if dept else None
+        school_id = dept.faculty.school_id if dept and dept.faculty else None
+
+        allowed_depts = {scope_id}
+        allowed_depts.update(all_receiving_dept_ids)
+
+        dept_venues_q = Q(owning_level="department", owning_department_id__in=allowed_depts)
+        faculty_venues_q = (
+            Q(owning_level="faculty", owning_faculty_id=faculty_id, owning_department__isnull=True)
+            if faculty_id
+            else Q(pk__in=[])
+        )
+        school_venues_q = Q(owning_level="school", owning_department__isnull=True)
+        if school_id:
+            school_venues_q &= (Q(owning_school_id=school_id) | Q(owning_school__isnull=True))
+
+        venue_filter &= (dept_venues_q | faculty_venues_q | school_venues_q)
+
+    venues_qs = (
+        Venue.objects.filter(venue_filter)
+        .select_related("owning_department__faculty", "owning_faculty", "owning_school")
+        .distinct()
+    )
+
     # Fallback to all active school venues if scope-specific venues are empty
-    if not venues_qs.exists():
-        venues_qs = Venue.objects.filter(
-            Q(owning_school=school)
-            | Q(owning_faculty__school_id=school.id)
-            | Q(owning_department__faculty__school_id=school.id)
-        ).filter(is_active=True)
+    if not venues_qs.exists() and school:
+        venues_qs = (
+            Venue.objects.filter(
+                Q(owning_school=school)
+                | Q(owning_faculty__school_id=school.id)
+                | Q(owning_department__faculty__school_id=school.id)
+            )
+            .filter(is_active=True)
+            .select_related("owning_department__faculty", "owning_faculty", "owning_school")
+            .distinct()
+        )
 
     venues_data: List[VenueData] = [
         VenueData(
@@ -197,7 +266,14 @@ def build_scheduling_problem_from_db(
             name=v.name,
             venue_type=v.venue_type,
             capacity=v.capacity,
-            owning_level=v.owning_level,
+            owning_level=v.owning_level or "school",
+            owning_department_id=v.owning_department_id,
+            owning_faculty_id=v.owning_faculty_id or (v.owning_department.faculty_id if v.owning_department else None),
+            owning_school_id=v.owning_school_id or (
+                v.owning_faculty.school_id if v.owning_faculty else (
+                    v.owning_department.faculty.school_id if v.owning_department and v.owning_department.faculty else None
+                )
+            ),
             owning_scope_id=v.owning_department_id or v.owning_faculty_id or v.owning_school_id or "",
         )
         for v in venues_qs
