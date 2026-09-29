@@ -7,6 +7,7 @@ from accounts.permissions import (
     get_user_scope_schools,
 )
 from django.db.models import Q
+from django.http import HttpResponse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
@@ -26,6 +27,10 @@ from .models import (
 )
 from .optimizer.generator import generate_timetable
 from .optimizer.genetic.algorithm import OptimizerConfig
+from .optimizer.preprocessing.export import (
+    serialize_problem_to_csv,
+    serialize_problem_to_dict,
+)
 from .optimizer.preprocessing.pipeline import build_scheduling_problem_from_db
 from .optimizer.publisher import publish_generation_run
 from .permissions import (
@@ -622,4 +627,56 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
 
         perm, _ = GenerationScopePermission.objects.get_or_create(school_id=school_id)
         return Response(GenerationScopePermissionSerializer(perm).data)
+
+    @extend_schema(summary="Export scheduling problem dataset as hierarchical JSON or CSV", request=GenerateTimetableRequestSerializer)
+    @action(detail=False, methods=["get", "post"], url_path="export-problem")
+    def export_problem(self, request):
+        if request.method.lower() == "post":
+            serializer = GenerateTimetableRequestSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            data = serializer.validated_data
+            semester_id = data["semester_id"]
+            scope_type = data["scope_type"]
+            scope_id = data["scope_id"]
+            export_format = request.data.get("format", "json").lower()
+        else:
+            semester_id = request.query_params.get("semester_id") or request.query_params.get("semester")
+            scope_type = request.query_params.get("scope_type", "school")
+            scope_id = request.query_params.get("scope_id")
+            export_format = request.query_params.get("format", "json").lower()
+            if not semester_id or not scope_id:
+                return Response(
+                    {"error": "Both semester_id and scope_id are required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        semester = Semester.objects.filter(id=semester_id).select_related("session__school").first()
+        if not semester:
+            return Response({"error": "Semester not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        is_allowed, reason = check_scope_generation_permission(request.user, semester, scope_type, scope_id)
+        if not is_allowed:
+            return Response({"error": reason}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            problem = build_scheduling_problem_from_db(
+                semester_id=semester_id,
+                scope_type=scope_type,
+                scope_id=scope_id,
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to prepare scheduling data: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if export_format == "csv":
+            csv_content = serialize_problem_to_csv(problem)
+            filename = f"scheduling_problem_{scope_type}_{scope_id}_semester_{semester_id}.csv"
+            response = HttpResponse(csv_content, content_type="text/csv")
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
+            return response
+
+        json_data = serialize_problem_to_dict(problem)
+        return Response(json_data, status=status.HTTP_200_OK)
 

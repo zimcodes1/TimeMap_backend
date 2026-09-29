@@ -210,3 +210,43 @@ class GenerationAPITests(APITestCase):
         run = TimetableGenerationRun.objects.get(id=run_id)
         self.assertTrue(run.is_published)
 
+    def test_export_scheduling_problem_json_and_csv(self):
+        self.client.force_authenticate(user=self.school_user)
+
+        payload = {
+            "semester_id": self.semester.id,
+            "scope_type": "school",
+            "scope_id": self.school.id,
+            "format": "json",
+        }
+
+        # 1. Test JSON Export
+        res_json = self.client.post("/api/scheduling/generate/export-problem/", payload, format="json")
+        self.assertEqual(res_json.status_code, status.HTTP_200_OK)
+        self.assertIn("metadata", res_json.data)
+        self.assertIn("hierarchy", res_json.data)
+        self.assertIn("venues", res_json.data)
+        self.assertIn("valid_slots", res_json.data)
+        self.assertIn("all_occurrences", res_json.data)
+
+        hierarchy = res_json.data["hierarchy"]
+        self.assertGreaterEqual(len(hierarchy), 1)
+        faculty_branch = hierarchy[0]
+        self.assertIn("departments", faculty_branch)
+        dept_branch = faculty_branch["departments"][0]
+        self.assertIn("programs", dept_branch)
+        prog_branch = dept_branch["programs"][0]
+        self.assertIn("levels", prog_branch)
+        level_branch = prog_branch["levels"][0]
+        self.assertIn("occurrences", level_branch)
+        self.assertGreater(len(level_branch["occurrences"]), 0)
+
+        # 2. Test CSV Export
+        payload["format"] = "csv"
+        res_csv = self.client.post("/api/scheduling/generate/export-problem/", payload, format="json")
+        self.assertEqual(res_csv.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_csv["Content-Type"], "text/csv")
+        csv_text = res_csv.content.decode("utf-8")
+        self.assertIn("Faculty Code,Faculty Name,Department Code", csv_text)
+        self.assertIn("Occurrence ID", csv_text)
+
