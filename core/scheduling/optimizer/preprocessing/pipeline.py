@@ -15,7 +15,7 @@ from .venues import build_allowed_venues_map
 def build_scheduling_problem_from_db(
     semester_id: int | str,
     scope_type: str,
-    scope_id: int | str,
+    scope_id: int | str, 
 ) -> SchedulingProblem:
     """
     Database adapter: queries Django models for the specified scope and active semester,
@@ -166,22 +166,20 @@ def build_scheduling_problem_from_db(
     venue_filter = Q(is_active=True)
     if scope_type == "school":
         venue_filter &= (
-            Q(owning_school_id=scope_id)
-            | Q(owning_faculty__school_id=scope_id)
-            | Q(owning_department__faculty__school_id=scope_id)
-            | Q(owning_level="school")
+            Q(owning_level="school", owning_school_id=scope_id)
+            | Q(owning_level="faculty", owning_faculty__school_id=scope_id)
+            | Q(owning_level="department", owning_department__faculty__school_id=scope_id)
         )
     elif scope_type == "faculty":
         venue_filter &= (
-            Q(owning_faculty_id=scope_id)
-            | Q(owning_department__faculty_id=scope_id)
-            | Q(owning_faculty__school_id=school.id)
+            Q(owning_level="faculty", owning_faculty_id=scope_id)
+            | Q(owning_level="department", owning_department__faculty_id=scope_id)
         )
     elif scope_type == "department":
         dept = Department.objects.filter(id=scope_id).first()
         venue_filter &= (
             Q(owning_department_id=scope_id)
-            | Q(owning_faculty_id=dept.faculty_id if dept else None)
+            | Q(owning_level="faculty", owning_faculty_id=dept.faculty_id if dept else None)
         )
 
     venues_qs = Venue.objects.filter(venue_filter).distinct()
