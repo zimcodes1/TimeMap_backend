@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -14,7 +15,10 @@ class VenueData:
     name: str
     venue_type: str  # "laboratory", "lecture_hall", "multipurpose"
     capacity: int
-    owning_level: str = "school"
+    owning_level: str = "school"  # "department", "faculty", "school"
+    owning_department_id: Optional[int | str] = None
+    owning_faculty_id: Optional[int | str] = None
+    owning_school_id: Optional[int | str] = None
     owning_scope_id: int | str = ""
 
     @property

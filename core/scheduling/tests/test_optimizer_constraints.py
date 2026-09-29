@@ -7,11 +7,13 @@ from scheduling.optimizer.constraints.occurrences import check_occurrence_days
 from scheduling.optimizer.constraints.students import check_student_conflicts
 from scheduling.optimizer.constraints.venues import check_venue_conflicts
 from scheduling.optimizer.models.assignment import Assignment
+from scheduling.optimizer.models.course import CourseData
 from scheduling.optimizer.models.occurrence import CourseOccurrence
 from scheduling.optimizer.models.problem import SchedulingProblem
 from scheduling.optimizer.models.slot import Slot
 from scheduling.optimizer.models.student_group import StudentGroup
 from scheduling.optimizer.models.venue import VenueData
+from scheduling.optimizer.preprocessing.venues import filter_allowed_venues
 
 
 class OptimizerConstraintsTests(TestCase):
@@ -120,4 +122,48 @@ class OptimizerConstraintsTests(TestCase):
         penalty, details = calculate_capacity_penalty([a], self.problem)
         self.assertEqual(penalty, 30)
         self.assertEqual(details[0]["overflow"], 30)
+
+    def test_hierarchical_venue_access_resolution(self):
+        # Venues:
+        # Dept 1 (CS)
+        v_cs_hall = VenueData(id=1, name="CS Hall", venue_type="lecture_hall", capacity=50, owning_level="department", owning_department_id=1, owning_faculty_id=10)
+        v_cs_lab = VenueData(id=2, name="CS Lab", venue_type="laboratory", capacity=40, owning_level="department", owning_department_id=1, owning_faculty_id=10)
+        # Dept 2 (Math)
+        v_math_hall = VenueData(id=3, name="Math Hall", venue_type="lecture_hall", capacity=60, owning_level="department", owning_department_id=2, owning_faculty_id=10)
+        # Faculty 10 (no dept)
+        v_fac_theatre = VenueData(id=4, name="Faculty Theatre", venue_type="lecture_hall", capacity=300, owning_level="faculty", owning_department_id=None, owning_faculty_id=10)
+        # School (no dept)
+        v_sch_auditorium = VenueData(id=5, name="School Auditorium", venue_type="multipurpose", capacity=1000, owning_level="school", owning_department_id=None, owning_school_id=100)
+
+        all_venues = [v_cs_hall, v_cs_lab, v_math_hall, v_fac_theatre, v_sch_auditorium]
+
+        # 1. Department lecture course (Dept 1 - CS)
+        c_cs_lec = CourseData(id=1, code="CSC101", title="Intro", level=100, department_id=1, faculty_id=10, owning_level="department", course_type="lecture")
+        allowed = filter_allowed_venues(c_cs_lec, all_venues)
+        # Allowed: CS Hall (1), Faculty Theatre (4), School Auditorium (5). Strictly blocked: Math Hall (3), CS Lab (2)
+        self.assertEqual(set(allowed), {1, 4, 5})
+
+        # 2. Department practical course (Dept 1 - CS)
+        c_cs_prac = CourseData(id=2, code="CSC102", title="CS Lab", level=100, department_id=1, faculty_id=10, owning_level="department", course_type="practical")
+        allowed_prac = filter_allowed_venues(c_cs_prac, all_venues)
+        # Allowed: only CS Lab (2)
+        self.assertEqual(set(allowed_prac), {2})
+
+        # 3. Shared department course (Dept 1 shared with Dept 2)
+        c_cs_shared = CourseData(id=3, code="CSC103", title="Shared", level=100, department_id=1, faculty_id=10, owning_level="department", receiving_department_ids=(2,), course_type="lecture")
+        allowed_shared = filter_allowed_venues(c_cs_shared, all_venues)
+        # Allowed: CS Hall (1), Math Hall (2), Faculty Theatre (4), School Auditorium (5)
+        self.assertEqual(set(allowed_shared), {1, 3, 4, 5})
+
+        # 4. Faculty course (no dept)
+        c_fac = CourseData(id=4, code="FAS101", title="Faculty Course", level=100, department_id="", faculty_id=10, owning_level="faculty", course_type="lecture")
+        allowed_fac = filter_allowed_venues(c_fac, all_venues)
+        # Allowed: only Faculty Theatre (4) and School Auditorium (5). Strictly blocked: CS Hall (1), Math Hall (3)
+        self.assertEqual(set(allowed_fac), {4, 5})
+
+        # 5. General course within scope
+        c_gen = CourseData(id=5, code="GST101", title="Use of English", level=100, department_id="", owning_level="general", is_general=True, course_type="lecture")
+        allowed_gen = filter_allowed_venues(c_gen, all_venues)
+        # Allowed: all lecture/multipurpose halls within scope (1, 3, 4, 5)
+        self.assertEqual(set(allowed_gen), {1, 3, 4, 5})
 

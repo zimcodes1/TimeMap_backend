@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import Optional, Tuple
 
 from .student_group import StudentGroup
 
@@ -22,6 +22,11 @@ class CourseData:
     lecturer_ids: Tuple[int | str, ...] = field(default_factory=tuple)
     allowed_venue_ids: Tuple[int | str, ...] = field(default_factory=tuple)
     expected_students: int = 50
+    owning_level: str = "department"  # "department", "faculty", "school", "general"
+    faculty_id: Optional[int | str] = None
+    school_id: Optional[int | str] = None
+    receiving_department_ids: Tuple[int | str, ...] = field(default_factory=tuple)
+    is_general: bool = False
 
     @property
     def is_practical(self) -> bool:
