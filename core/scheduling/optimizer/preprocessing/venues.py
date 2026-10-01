@@ -113,6 +113,35 @@ def filter_allowed_venues(
         if v_dept_id is None or (owning_dept_id and v_dept_id in allowed_dept_ids):
             allowed.append(venue.id)
 
+    # Safety fallback: If practical course has no lab in its immediate hierarchy,
+    # fallback to available labs in the faculty/school rather than 0 allowed venues.
+    if is_practical and not allowed:
+        faculty_or_school_labs = [
+            v.id
+            for v in all_venues
+            if v.is_laboratory
+            and (
+                v_fac_id == course_fac_id
+                or (v.owning_level and v.owning_level.lower() in ("faculty", "school"))
+            )
+        ]
+        if not faculty_or_school_labs:
+            faculty_or_school_labs = [v.id for v in all_venues if v.is_laboratory]
+        allowed.extend(faculty_or_school_labs)
+    elif not is_practical and not allowed:
+        fallback_halls = [
+            v.id
+            for v in all_venues
+            if not v.is_laboratory
+            and (
+                v_fac_id == course_fac_id
+                or (v.owning_level and v.owning_level.lower() in ("faculty", "school"))
+            )
+        ]
+        if not fallback_halls:
+            fallback_halls = [v.id for v in all_venues if not v.is_laboratory]
+        allowed.extend(fallback_halls)
+
     return allowed
 
 
@@ -124,4 +153,3 @@ def build_allowed_venues_map(
     Builds a map of course_id -> list of allowed venue_ids for all courses.
     """
     return {c.id: filter_allowed_venues(c, all_venues) for c in courses}
-

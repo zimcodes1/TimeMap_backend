@@ -613,10 +613,18 @@ class GenerateTimetableRequestSerializer(serializers.Serializer):
         choices=["school", "faculty", "department"], required=True
     )
     scope_id = serializers.IntegerField(required=True)
-    population_size = serializers.IntegerField(required=False, default=60, min_value=10, max_value=300)
-    max_generations = serializers.IntegerField(required=False, default=150, min_value=10, max_value=1000)
-    mutation_rate = serializers.FloatField(required=False, default=0.08, min_value=0.01, max_value=1.0)
-    stagnation_limit = serializers.IntegerField(required=False, default=40, min_value=5, max_value=200)
+    population_size = serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=10, max_value=500
+    )
+    max_generations = serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=10, max_value=2000
+    )
+    mutation_rate = serializers.FloatField(
+        required=False, allow_null=True, default=None, min_value=0.01, max_value=1.0
+    )
+    stagnation_limit = serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=5, max_value=300
+    )
     publish_immediately = serializers.BooleanField(required=False, default=False)
 
     def validate(self, attrs):

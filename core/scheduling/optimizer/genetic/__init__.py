@@ -7,8 +7,9 @@ from .population import (
     create_initial_population,
     create_random_individual,
 )
-from .repair import repair_chromosome
+from .repair import final_repair_pass, repair_chromosome
 from .selection import tournament_selection
+from .venue_utils import pick_best_fit_venue
 
 __all__ = [
     "Chromosome",
@@ -17,11 +18,12 @@ __all__ = [
     "create_heuristic_individual",
     "create_initial_population",
     "create_random_individual",
+    "final_repair_pass",
     "mutate",
+    "pick_best_fit_venue",
     "repair_chromosome",
     "run_genetic_algorithm",
     "tournament_selection",
     "two_point_crossover",
     "uniform_crossover",
 ]
-

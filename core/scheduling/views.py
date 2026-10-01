@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Any, Dict, Optional
 from accounts.permissions import (
     IsAdminUserRole,
     IsPasswordResetDone,
@@ -453,6 +454,41 @@ class ExamSittingViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
 
+def infer_optimizer_config_for_scope(
+    scope_type: str,
+    total_occurrences: int,
+    data: Optional[Dict[str, Any]] = None,
+) -> OptimizerConfig:
+    """
+    Infers optimal Genetic Algorithm hyperparameters based on the target scope level
+    and problem occurrence scale, allowing explicit user overrides if provided.
+    """
+    data = data or {}
+
+    if scope_type == "department":
+        base_pop = 60
+        base_gens = 120
+        base_patience = 30
+        base_mut = 0.08
+    elif scope_type == "faculty":
+        base_pop = 120 if total_occurrences >= 150 else 80
+        base_gens = 250
+        base_patience = 45
+        base_mut = 0.08
+    else:  # "school"
+        base_pop = 180 if total_occurrences >= 300 else 120
+        base_gens = 350
+        base_patience = 60
+        base_mut = 0.07
+
+    return OptimizerConfig(
+        population_size=data.get("population_size") or base_pop,
+        max_generations=data.get("max_generations") or base_gens,
+        mutation_rate=data.get("mutation_rate") or base_mut,
+        patience=data.get("stagnation_limit") or base_patience,
+    )
+
+
 class TimetableGenerationViewSet(viewsets.ViewSet):
     """
     Automated timetable generation and discrepancy preview engine using Genetic Algorithm.
@@ -496,12 +532,11 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Configure optimizer
-        config = OptimizerConfig(
-            population_size=data.get("population_size", 60),
-            max_generations=data.get("max_generations", 150),
-            mutation_rate=data.get("mutation_rate", 0.08),
-            patience=data.get("stagnation_limit", 40),
+        # Configure optimizer - auto-inferred from scope level and occurrence scale
+        config = infer_optimizer_config_for_scope(
+            scope_type=scope_type,
+            total_occurrences=len(problem.occurrences),
+            data=data,
         )
 
         # Execute optimization
