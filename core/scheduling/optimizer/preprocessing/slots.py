@@ -18,6 +18,15 @@ PERIODS = [
     (4, "16:00", "18:00"),
 ]
 
+# Map weekday name (lowercase) -> RRULE day code
+DAY_CODE_MAP = {
+    "monday": "MO",
+    "tuesday": "TU",
+    "wednesday": "WE",
+    "thursday": "TH",
+    "friday": "FR",
+}
+
 
 def build_valid_slots() -> List[Slot]:
     """
@@ -46,4 +55,3 @@ def build_valid_slots() -> List[Slot]:
             )
 
     return slots
-
