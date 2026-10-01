@@ -43,22 +43,34 @@ def build_scheduling_problem_from_db(
         dept = Department.objects.filter(id=scope_id).first()
         scope_name = dept.name if dept else f"Department #{scope_id}"
 
-    # 2. Query courses within scope and semester
     course_filter = Q()
     if scope_type == "school":
         course_filter = (
             Q(owning_school_id=scope_id)
             | Q(owning_faculty__school_id=scope_id)
             | Q(owning_department__faculty__school_id=scope_id)
-            | Q(owning_level="general")
+            | (Q(owning_level="general") & (Q(owning_school_id=scope_id) | Q(owning_school__isnull=True)))
         )
     elif scope_type == "faculty":
+        fac = Faculty.objects.filter(id=scope_id).first()
+        school_id = fac.school_id if fac else None
         course_filter = (
             Q(owning_faculty_id=scope_id)
             | Q(owning_department__faculty_id=scope_id)
         )
+        if school_id:
+            course_filter |= (
+                Q(owning_level=Course.OwningLevel.GENERAL, owning_school_id=school_id)
+                | Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty_id=scope_id)
+            )
     elif scope_type == "department":
         course_filter = Q(owning_department_id=scope_id)
+        shared_course_ids = CourseAccessGrant.objects.filter(
+            status="approved",
+            granted_to_department_id=scope_id,
+        ).values_list("course_id", flat=True)
+        if shared_course_ids.exists():
+            course_filter |= Q(id__in=list(shared_course_ids))
 
     # Filter courses attached to this semester or without semester set
     courses_qs = (
@@ -283,6 +295,30 @@ def build_scheduling_problem_from_db(
 
     # 7. Allowed venues resolution
     allowed_venues_by_course = build_allowed_venues_map(courses_data, venues_data)
+
+    # Propagate allowed venues back to CourseData so CourseOccurrence inherits them
+    courses_data = [
+        CourseData(
+            id=c.id,
+            code=c.code,
+            title=c.title,
+            level=c.level,
+            department_id=c.department_id,
+            department_name=c.department_name,
+            required_occurrences=c.required_occurrences,
+            course_type=c.course_type,
+            student_groups=c.student_groups,
+            lecturer_ids=c.lecturer_ids,
+            allowed_venue_ids=tuple(allowed_venues_by_course.get(c.id, ())),
+            expected_students=c.expected_students,
+            owning_level=c.owning_level,
+            faculty_id=c.faculty_id,
+            school_id=c.school_id,
+            receiving_department_ids=c.receiving_department_ids,
+            is_general=c.is_general,
+        )
+        for c in courses_data
+    ]
 
     # 8. Expand course occurrences
     occurrences = expand_occurrences(courses_data)

@@ -138,7 +138,7 @@ Understanding the magnitude difference is critical:
 
 ### P1: Venue Pool Explosion & No Capacity-Aware Assignment
 
-**File:** [`population.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/population.py)
+**File:** [`population.py`](../core/scheduling/optimizer/genetic/population.py)
 
 The heuristic individual creator picks venues with `capacity >= expected_students` if available, but **treats all qualifying venues equally** — a 50-student course has equal chance of landing in a 60-seat room or a 500-seat auditorium. At faculty scope, where large shared venues (LT1 500 seats, Twin A/B 450 seats, PTDF 400 seats) are in almost every course's allowed list, **small courses systematically steal large venues**, leaving large courses no room.
 
@@ -146,7 +146,7 @@ The heuristic individual creator picks venues with `capacity >= expected_student
 
 ### P2: No Venue Conflict Repair in `repair_chromosome`
 
-**File:** [`repair.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/repair.py)
+**File:** [`repair.py`](../core/scheduling/optimizer/genetic/repair.py)
 
 The repair function only fixes:
 1. ✅ Multi-occurrence day clashes
@@ -161,19 +161,19 @@ These are the **hardest** conflicts (weights 5,000-10,000) and the most frequent
 
 ### P3: No Lecturer Conflict Repair
 
-**File:** [`repair.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/repair.py)
+**File:** [`repair.py`](../core/scheduling/optimizer/genetic/repair.py)
 
 Lecturer double-bookings (weight 5,000) have no deterministic repair. The GA relies entirely on random mutation to resolve them. At faculty scope, shared lecturers teaching across departments make this a dense constraint.
 
 ### P4: No Student Conflict Repair
 
-**File:** [`repair.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/repair.py)
+**File:** [`repair.py`](../core/scheduling/optimizer/genetic/repair.py)
 
 Student conflicts (weight 10,000 — the **highest priority** constraint) have no deterministic repair. When crossover combines parents, it frequently creates offspring where two courses sharing students land in the same slot. Without repair, this must be fixed by random mutation hitting the exact right gene — extremely improbable at faculty scale.
 
 ### P5: `crossover_rate` is Never Used
 
-**File:** [`algorithm.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/algorithm.py)
+**File:** [`algorithm.py`](../core/scheduling/optimizer/genetic/algorithm.py)
 
 `OptimizerConfig.crossover_rate = 0.85` is declared but **never checked** in the breeding loop. Every parent pair unconditionally undergoes crossover. This means:
 - No individuals pass through unchanged (reducing exploitation)
@@ -191,13 +191,13 @@ child_a, child_b = uniform_crossover(parent_a, parent_b)
 
 ### P6: `constraint_aware_mutation` is Never Called
 
-**File:** [`mutation.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/mutation.py)
+**File:** [`mutation.py`](../core/scheduling/optimizer/genetic/mutation.py)
 
 A sophisticated targeted mutation function exists that accepts `conflicted_gene_indices` and specifically mutates genes involved in conflicts. However, **it is never called** from `algorithm.py`. The main loop only calls `mutate()` (the random variant). This is a significant waste — the conflict-aware mutation is exactly what faculty-scope runs need.
 
 ### P7: Population Too Small for Faculty Problems
 
-**File:** [`algorithm.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/algorithm.py)
+**File:** [`algorithm.py`](../core/scheduling/optimizer/genetic/algorithm.py)
 
 `population_size=60` is hardcoded as default. For a department with ~60 genes, this provides ~1 individual per gene — adequate. For a faculty with ~550 genes, 60 individuals cannot sample the solution space meaningfully. The GA stagnates early because the population lacks genetic diversity.
 
@@ -205,7 +205,7 @@ A sophisticated targeted mutation function exists that accepts `conflicted_gene_
 
 ### P8: Heuristic Venue Selection Doesn't Prioritize Capacity Fit
 
-**File:** [`population.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/population.py#L79-L96)
+**File:** [`population.py`](../core/scheduling/optimizer/genetic/population.py#L79-L96)
 
 ```python
 fitting_venues = []
@@ -221,7 +221,7 @@ A 50-student course with 15 fitting venues (capacities 60, 90, 100, 150, 200, 30
 
 ### P9: Lecturer Conflicts Not Tracked in Heuristic Initialization
 
-**File:** [`population.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/population.py)
+**File:** [`population.py`](../core/scheduling/optimizer/genetic/population.py)
 
 The heuristic tracks:
 - ✅ Course day spreading (`course_assigned_days`)
@@ -234,7 +234,7 @@ At faculty scope, lecturers teaching multiple courses across departments cause i
 
 ### P10: Faculty Scope Omits General Courses
 
-**File:** [`pipeline.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/preprocessing/pipeline.py#L55-L59)
+**File:** [`pipeline.py`](../core/scheduling/optimizer/preprocessing/pipeline.py#L55-L59)
 
 ```python
 elif scope_type == "faculty":
@@ -248,7 +248,7 @@ This filter **does not include** courses with `owning_level="general"`, even if 
 
 ### P11: Department Scope Ignores Inbound Access Grants
 
-**File:** [`pipeline.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/preprocessing/pipeline.py#L61)
+**File:** [`pipeline.py`](../core/scheduling/optimizer/preprocessing/pipeline.py#L61)
 
 ```python
 elif scope_type == "department":
@@ -259,15 +259,15 @@ If Department A grants access to its course for Department B's students, and Dep
 
 ### P12: `CourseOccurrence.allowed_venue_ids` Always Empty
 
-**File:** [`pipeline.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/preprocessing/pipeline.py)
+**File:** [`pipeline.py`](../core/scheduling/optimizer/preprocessing/pipeline.py)
 
 `CourseData` is created without populating `allowed_venue_ids` (defaults to empty `()`). The `allowed_venues_by_course` map is computed separately on `SchedulingProblem`. However, `CourseOccurrence` copies `allowed_venue_ids` from `CourseData`, meaning every occurrence has `allowed_venue_ids = ()`.
 
-**Impact:** Mainly affects `export.py` (exports show empty venue lists). The GA itself correctly uses `problem.allowed_venues_by_course[occ.course_id]`, so this is a data consistency bug rather than a runtime correctness bug.
+**Impact:** Mainly affects [`export.py`](../core/scheduling/optimizer/preprocessing/export.py) (exports show empty venue lists). The GA itself correctly uses `problem.allowed_venues_by_course[occ.course_id]`, so this is a data consistency bug rather than a runtime correctness bug.
 
 ### P13: Venue ID 0 Fallback Causes Ghost Conflicts
 
-**File:** [`population.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/genetic/population.py#L21)
+**File:** [`population.py`](../core/scheduling/optimizer/genetic/population.py#L21)
 
 ```python
 venue_id = random.choice(allowed_venues) if allowed_venues else 0
@@ -277,7 +277,7 @@ If a course has 0 allowed venues (e.g., practical course in a department with no
 
 ### P14: Daily Limit Violation Counting Amplifies Penalty
 
-**File:** [`daily_limits.py`](file:///home/azimeh/Desktop/Code/TimeMapper/TimeMap_backend/core/scheduling/optimizer/constraints/daily_limits.py)
+**File:** [`daily_limits.py`](../core/scheduling/optimizer/constraints/daily_limits.py)
 
 If a student group has 5 lectures on Monday (limit 3), the violation count is `5 - 3 = 2`. But at faculty scope, a single student group (e.g., "CSC 100L") might take 8-10 courses. If 5 of them land on the same day, that's 2 violations × weight 2,000 = 4,000 penalty. With 50+ student groups, daily limit violations compound rapidly and disproportionately penalize the chromosome, distracting the GA from resolving the more critical student/venue/lecturer conflicts.
 
@@ -334,7 +334,7 @@ flowchart LR
 
 **Priority: 🔴 CRITICAL** | **Impact: Eliminates all venue double-bookings**
 
-Add a repair stage that scans for slot-venue collisions and relocates one of the conflicting assignments to a different slot or venue.
+Add a repair stage in [`repair.py`](../core/scheduling/optimizer/genetic/repair.py) that scans for slot-venue collisions and relocates one of the conflicting assignments to a different slot or venue.
 
 ```python
 # In repair.py — add after existing Stage 2
@@ -380,10 +380,10 @@ for (slot_id, venue_id), indices in slot_venue_map.items():
 
 **Priority: 🔴 CRITICAL** | **Impact: Eliminates most student cohort clashes**
 
-After crossover/mutation, scan for student group conflicts and relocate one conflicting assignment to a different slot.
+After crossover/mutation, scan for student group conflicts in [`repair.py`](../core/scheduling/optimizer/genetic/repair.py) and relocate one conflicting assignment to a different slot.
 
 ```python
-# Stage 4: Resolve student cohort clashes
+# Stage 4: Resolve student cohort clashes in repair.py
 slot_assignments_map: Dict[str, List[int]] = defaultdict(list)
 for i, a in enumerate(assignments):
     slot_assignments_map[a.slot.slot_id].append(i)
@@ -485,13 +485,13 @@ def _pick_best_fit_venue(
         return allowed_venue_ids[0] if allowed_venue_ids else 0
 ```
 
-Use this in both `create_heuristic_individual()` and `create_random_individual()`, and in `repair_chromosome()` when reassigning venues.
+Use this in both `create_heuristic_individual()` and `create_random_individual()` in [`population.py`](../core/scheduling/optimizer/genetic/population.py), and in `repair_chromosome()` in [`repair.py`](../core/scheduling/optimizer/genetic/repair.py) when reassigning venues.
 
 ### R5: Wire Up `constraint_aware_mutation`
 
 **Priority: 🟡 HIGH** | **Impact: Directed mutation on conflict hotspots**
 
-In `algorithm.py`, after evaluating the population, identify conflicted gene indices and use targeted mutation:
+In [`algorithm.py`](../core/scheduling/optimizer/genetic/algorithm.py), after evaluating the population, identify conflicted gene indices and use targeted mutation:
 
 ```python
 # In the breeding loop, after mutation:
@@ -550,7 +550,7 @@ Also scale `max_generations` and `patience`:
 **Priority: 🟡 HIGH** | **Impact: Better initial population quality**
 
 ```python
-# In create_heuristic_individual, add:
+# In create_heuristic_individual in population.py, add:
 lecturer_occupied_slots: Set[str] = set()  # "lid_slotid"
 
 # When placing an occurrence:
@@ -576,7 +576,7 @@ for lid in occ.lecturer_ids:
     lecturer_occupied_slots.add(f"{lid}_{chosen_slot.slot_id}")
 ```
 
-### R9: Pipeline Fixes
+### R9: Pipeline Fixes (in [`pipeline.py`](../core/scheduling/optimizer/preprocessing/pipeline.py))
 
 **Priority: 🟡 HIGH**
 
@@ -627,7 +627,7 @@ occurrences = expand_occurrences(courses_data)
 
 **Priority: 🔴 CRITICAL** | **Impact: Guarantees zero venue conflicts in final output**
 
-After the GA finishes and returns the best chromosome, run a **final deterministic repair pass** that methodically resolves all remaining hard conflicts using a greedy algorithm:
+After the GA finishes and returns the best chromosome, run a **final deterministic repair pass** in [`repair.py`](../core/scheduling/optimizer/genetic/repair.py) (invoked from [`generator.py`](../core/scheduling/optimizer/generator.py)) that methodically resolves all remaining hard conflicts using a greedy algorithm:
 
 ```python
 def final_repair_pass(
