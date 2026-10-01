@@ -36,10 +36,12 @@ def get_class_rep_analytics(student_user, start_date=None, end_date=None):
     start_d = _parse_date(start_date)
     end_d = _parse_date(end_date)
 
-    # Scoped to student's department and level
+    from courses.services import get_visible_courses_for_student
+    visible_courses = get_visible_courses_for_student(student)
+
+    # Scoped to student's visible courses
     sessions = LectureSession.objects.filter(
-        timetable_entry__course__owning_department=student.department,
-        timetable_entry__course__level=student.level,
+        timetable_entry__course__in=visible_courses,
     )
 
     if start_d:

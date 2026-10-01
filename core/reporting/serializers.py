@@ -10,6 +10,7 @@ class ClassRepReportSerializer(serializers.ModelSerializer):
     course_title = serializers.ReadOnlyField(source="lecture_session.timetable_entry.course.title")
     timetable_entry_title = serializers.ReadOnlyField(source="lecture_session.timetable_entry.title")
     session_date = serializers.ReadOnlyField(source="lecture_session.session_date")
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
 
     class Meta:
         model = ClassRepReport
