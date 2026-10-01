@@ -419,11 +419,13 @@ def get_venue_utilization_analytics(
     department_id=None,
     faculty_id=None,
     venue_id=None,
+    semester_id=None,
     group_by="venue",
+    faculty_owned_only=False,
 ):
     """
     Computes venue utilization hours for lectures across venues in user scope,
-    optionally narrowed per department or grouped per faculty.
+    optionally narrowed per department, faculty-owned venues alone, or grouped per faculty.
     """
     dept_qs = get_user_scope_departments(user)
     fac_qs = get_user_scope_faculties(user)
@@ -446,13 +448,27 @@ def get_venue_utilization_analytics(
         sessions = sessions.filter(session_date__gte=start_date)
     if end_date:
         sessions = sessions.filter(session_date__lte=end_date)
-    if faculty_id:
+    if semester_id:
+        sessions = sessions.filter(timetable_entry__semester_id=semester_id)
+
+    if faculty_owned_only:
         sessions = sessions.filter(
-            Q(venue__owning_faculty_id=faculty_id)
-            | Q(venue__owning_department__faculty_id=faculty_id)
+            venue__owning_level="faculty",
+            venue__owning_department__isnull=True,
         )
-    if department_id:
-        sessions = sessions.filter(venue__owning_department_id=department_id)
+        if faculty_id:
+            sessions = sessions.filter(venue__owning_faculty_id=faculty_id)
+        elif fac_qs.exists():
+            sessions = sessions.filter(venue__owning_faculty__in=fac_qs)
+    else:
+        if faculty_id:
+            sessions = sessions.filter(
+                Q(venue__owning_faculty_id=faculty_id)
+                | Q(venue__owning_department__faculty_id=faculty_id)
+            )
+        if department_id:
+            sessions = sessions.filter(venue__owning_department_id=department_id)
+
     if venue_id:
         sessions = sessions.filter(venue_id=venue_id)
 
@@ -507,9 +523,35 @@ def get_venue_utilization_analytics(
         }
 
     venue_hours = {}
+    target_venues = None
+    if faculty_owned_only:
+        target_venues = Venue.objects.filter(
+            owning_level="faculty",
+            owning_department__isnull=True,
+            is_active=True,
+        )
+        if faculty_id:
+            target_venues = target_venues.filter(owning_faculty_id=faculty_id)
+        elif fac_qs.exists():
+            target_venues = target_venues.filter(owning_faculty__in=fac_qs)
+    elif department_id:
+        target_venues = Venue.objects.filter(
+            owning_department_id=department_id,
+            is_active=True,
+        )
+
+    if target_venues is not None:
+        for v in target_venues:
+            venue_hours[v.id] = {
+                "venue_id": v.id,
+                "venue_name": v.name,
+                "total_booked_hours": 0.0,
+                "total_sessions": 0,
+            }
+
     for s in sessions:
         v_id = s.venue_id
-        v_name = s.venue.name
+        v_name = s.venue.name if s.venue else "Unknown Venue"
         t_start = datetime.datetime.combine(s.session_date, s.session_start_time)
         t_end = datetime.datetime.combine(s.session_date, s.session_end_time)
         hours = max(0.0, (t_end - t_start).total_seconds() / 3600.0)
