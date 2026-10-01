@@ -427,8 +427,11 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
 
                 course = updated_session.timetable_entry.course
                 if course:
+                    notified_user_ids = set()
+
+                    # 1. Notify assigned lecturers (including initiating lecturer for confirmation)
                     for lecturer in course.lecturers.all():
-                        if lecturer.user_id != request.user.id:
+                        if lecturer.user and lecturer.user.id not in notified_user_ids:
                             dispatch_event_notification(
                                 recipient=lecturer.user,
                                 notification_type=Notification.NotificationType.SESSION_SHIFTED,
@@ -437,20 +440,44 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
                                 related_model="LectureSession",
                                 related_id=updated_session.id,
                             )
-                    class_reps = Student.objects.filter(is_class_rep=True, level=course.level)
-                    if course.target_program_id:
-                        class_reps = class_reps.filter(program_id=course.target_program_id)
-                    elif course.owning_department_id:
-                        class_reps = class_reps.filter(department_id=course.owning_department_id)
-                    for rep in class_reps:
+                            notified_user_ids.add(lecturer.user.id)
+
+                    # Also notify requesting user if lecturer
+                    if request.user.is_authenticated and request.user.id not in notified_user_ids:
                         dispatch_event_notification(
-                            recipient=rep.user,
+                            recipient=request.user,
                             notification_type=Notification.NotificationType.SESSION_SHIFTED,
-                            title=f"Lecture Shifted: {course.code}",
-                            body=f"Lecture for {course.code} on {updated_session.session_date} was shifted to {updated_session.venue.name} ({updated_session.session_start_time.strftime('%H:%M')} - {updated_session.session_end_time.strftime('%H:%M')}).",
+                            title=f"Session Shifted: {course.code}",
+                            body=f"Session for {course.code} on {updated_session.session_date} was successfully shifted to {updated_session.venue.name} ({updated_session.session_start_time.strftime('%H:%M')} - {updated_session.session_end_time.strftime('%H:%M')}).",
                             related_model="LectureSession",
                             related_id=updated_session.id,
                         )
+                        notified_user_ids.add(request.user.id)
+
+                    # 2. Notify class reps (target program, owning department, or access-granted departments)
+                    from django.db.models import Q
+                    rep_conds = Q()
+                    if course.target_program_id:
+                        rep_conds |= Q(program_id=course.target_program_id)
+                    if course.owning_department_id:
+                        rep_conds |= Q(department_id=course.owning_department_id)
+
+                    granted_depts = course.access_grants.filter(status="approved").values_list("granted_to_department_id", flat=True)
+                    if granted_depts:
+                        rep_conds |= Q(department_id__in=granted_depts)
+
+                    class_reps = Student.objects.filter(is_class_rep=True, level=course.level).filter(rep_conds).distinct()
+                    for rep in class_reps:
+                        if rep.user and rep.user.id not in notified_user_ids:
+                            dispatch_event_notification(
+                                recipient=rep.user,
+                                notification_type=Notification.NotificationType.SESSION_SHIFTED,
+                                title=f"Lecture Shifted: {course.code}",
+                                body=f"Lecture for {course.code} on {updated_session.session_date} was shifted to {updated_session.venue.name} ({updated_session.session_start_time.strftime('%H:%M')} - {updated_session.session_end_time.strftime('%H:%M')}).",
+                                related_model="LectureSession",
+                                related_id=updated_session.id,
+                            )
+                            notified_user_ids.add(rep.user.id)
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).error(f"Failed to dispatch session shift notification: {e}")
