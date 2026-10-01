@@ -106,12 +106,21 @@ class AnalyticsViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["get"], url_path="lecture-hold-rate")
     def lecture_hold_rate(self, request):
         from .analytics import get_lecture_hold_rate_analytics
+        dept_id = request.query_params.get("department_id")
+        faculty_id = request.query_params.get("faculty_id")
+        is_faculty_admin = (
+            hasattr(request.user, "admin_profile")
+            and getattr(request.user.admin_profile, "level", None) == "faculty"
+        )
+        if not faculty_id and is_faculty_admin and getattr(request.user.admin_profile, "scope_faculty_id", None):
+            faculty_id = str(request.user.admin_profile.scope_faculty_id)
+
         data = get_lecture_hold_rate_analytics(
             user=request.user,
             start_date=request.query_params.get("start_date"),
             end_date=request.query_params.get("end_date"),
-            department_id=request.query_params.get("department_id"),
-            faculty_id=request.query_params.get("faculty_id"),
+            department_id=dept_id,
+            faculty_id=faculty_id,
             course_id=request.query_params.get("course_id"),
             level=request.query_params.get("level"),
             program_id=request.query_params.get("program_id"),
@@ -125,14 +134,33 @@ class AnalyticsViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["get"], url_path="venue-utilization")
     def venue_utilization(self, request):
         from .analytics import get_venue_utilization_analytics
+        dept_id = request.query_params.get("department_id")
+        faculty_id = request.query_params.get("faculty_id")
+        is_faculty_admin = (
+            hasattr(request.user, "admin_profile")
+            and getattr(request.user.admin_profile, "level", None) == "faculty"
+        )
+        if not faculty_id and is_faculty_admin and getattr(request.user.admin_profile, "scope_faculty_id", None):
+            faculty_id = str(request.user.admin_profile.scope_faculty_id)
+
+        faculty_owned_param = request.query_params.get("faculty_owned_only")
+        if faculty_owned_param is not None:
+            faculty_owned_only = str(faculty_owned_param).lower() in ["true", "1"]
+        elif is_faculty_admin and not dept_id:
+            faculty_owned_only = True
+        else:
+            faculty_owned_only = False
+
         data = get_venue_utilization_analytics(
             user=request.user,
             start_date=request.query_params.get("start_date"),
             end_date=request.query_params.get("end_date"),
-            department_id=request.query_params.get("department_id"),
-            faculty_id=request.query_params.get("faculty_id"),
+            department_id=dept_id,
+            faculty_id=faculty_id,
             venue_id=request.query_params.get("venue_id"),
+            semester_id=request.query_params.get("semester_id"),
             group_by=request.query_params.get("group_by", "venue"),
+            faculty_owned_only=faculty_owned_only,
         )
         return Response(data, status=status.HTTP_200_OK)
 
