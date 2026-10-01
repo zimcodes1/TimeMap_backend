@@ -23,11 +23,24 @@ def validate_discrepancy_submission(
     reason=None,
 ):
     """
-    Ensures that only admin officers can apply, validates internal consistency per request_type,
+    Ensures that only admin officers and assigned course lecturers can apply, validates internal consistency per request_type,
     operating hours (8am-6pm), and instance vs pattern level targeting.
     """
-    if not user or not user.is_authenticated or user.role != "admin" or not hasattr(user, "admin_profile") or not user.admin_profile:
-        raise serializers.ValidationError({"detail": "Only admin officers are authorized to submit discrepancy requests."})
+    is_admin = user and user.is_authenticated and user.role == "admin" and hasattr(user, "admin_profile") and user.admin_profile
+    is_lecturer = user and user.is_authenticated and user.role == "lecturer" and hasattr(user, "lecturer_profile") and user.lecturer_profile
+
+    if not is_admin and not is_lecturer:
+        raise serializers.ValidationError({"detail": "Only admin officers and assigned course lecturers are authorized to submit discrepancy requests."})
+
+    if is_lecturer:
+        if timetable_entry:
+            course = getattr(timetable_entry, "course", None)
+            if not course or not course.lecturers.filter(id=user.lecturer_profile.id).exists():
+                raise serializers.ValidationError({"detail": "You can only submit discrepancy requests for courses assigned to you."})
+        elif lecture_session:
+            course = getattr(lecture_session.timetable_entry, "course", None)
+            if not course or not course.lecturers.filter(id=user.lecturer_profile.id).exists():
+                raise serializers.ValidationError({"detail": "You can only submit discrepancy requests for courses assigned to you."})
 
     if request_type != DiscrepancyRequest.RequestType.CREATE_BOOKING:
         if not timetable_entry:
@@ -199,9 +212,19 @@ def process_discrepancy_submission(
     routed_admin = resolve_discrepancy_routing_admin(target_venue)
     routed_to_id = routed_admin.id if routed_admin else None
 
-    # If venue is unassigned to any admin profile, fallback to the user's admin profile if admin
-    if not routed_to_id and hasattr(user, "admin_profile") and user.admin_profile:
-        routed_to_id = user.admin_profile.id
+    # If venue is unassigned to any admin profile, fallback to user's admin profile or course department admin
+    if not routed_to_id:
+        if hasattr(user, "admin_profile") and user.admin_profile:
+            routed_to_id = user.admin_profile.id
+        elif hasattr(user, "lecturer_profile") and user.lecturer_profile:
+            dept = None
+            if timetable_entry and timetable_entry.course:
+                dept = timetable_entry.course.owning_department
+            dept = dept or user.lecturer_profile.department
+            if dept:
+                dept_admin = AdminOfficer.objects.filter(level=AdminOfficer.Level.DEPARTMENT, scope_department=dept).first()
+                if dept_admin:
+                    routed_to_id = dept_admin.id
 
     discrepancy = DiscrepancyRequest.objects.create(
         timetable_entry=timetable_entry,
@@ -252,18 +275,19 @@ def apply_discrepancy_request(discrepancy):
     # Instance-Level Application (LectureSession)
     if discrepancy.lecture_session:
         session = discrepancy.lecture_session
-        if req_type == DiscrepancyRequest.RequestType.SHIFT_VENUE and discrepancy.proposed_venue:
+        if discrepancy.proposed_venue:
             session.venue = discrepancy.proposed_venue
             session.status = LectureSession.Status.SHIFTED
-        elif req_type == DiscrepancyRequest.RequestType.SHIFT_TIME:
-            if discrepancy.proposed_start_time:
-                session.session_start_time = discrepancy.proposed_start_time
-            if discrepancy.proposed_end_time:
-                session.session_end_time = discrepancy.proposed_end_time
-            if discrepancy.proposed_date:
-                session.session_date = discrepancy.proposed_date
+        if discrepancy.proposed_start_time:
+            session.session_start_time = discrepancy.proposed_start_time
             session.status = LectureSession.Status.SHIFTED
-        elif req_type == DiscrepancyRequest.RequestType.POSTPONE:
+        if discrepancy.proposed_end_time:
+            session.session_end_time = discrepancy.proposed_end_time
+            session.status = LectureSession.Status.SHIFTED
+        if discrepancy.proposed_date:
+            session.session_date = discrepancy.proposed_date
+            session.status = LectureSession.Status.SHIFTED
+        if req_type == DiscrepancyRequest.RequestType.POSTPONE:
             session.status = LectureSession.Status.POSTPONED
         elif req_type == DiscrepancyRequest.RequestType.CANCEL:
             session.status = LectureSession.Status.CANCELLED
@@ -275,21 +299,21 @@ def apply_discrepancy_request(discrepancy):
         entry = discrepancy.timetable_entry
         sessions_to_update = LectureSession.objects.filter(timetable_entry=entry)
 
-        if req_type == DiscrepancyRequest.RequestType.SHIFT_VENUE and discrepancy.proposed_venue:
+        if discrepancy.proposed_venue:
             entry.venue = discrepancy.proposed_venue
             sessions_to_update.update(venue=discrepancy.proposed_venue)
-        elif req_type == DiscrepancyRequest.RequestType.SHIFT_TIME:
-            update_fields = {}
-            if discrepancy.proposed_start_time:
-                entry.start_time = discrepancy.proposed_start_time
-                update_fields["session_start_time"] = discrepancy.proposed_start_time
-            if discrepancy.proposed_end_time:
-                entry.end_time = discrepancy.proposed_end_time
-                update_fields["session_end_time"] = discrepancy.proposed_end_time
-            if discrepancy.proposed_date:
-                entry.recurrence_start_date = discrepancy.proposed_date
-            if update_fields:
-                sessions_to_update.update(**update_fields)
+
+        update_fields = {}
+        if discrepancy.proposed_start_time:
+            entry.start_time = discrepancy.proposed_start_time
+            update_fields["session_start_time"] = discrepancy.proposed_start_time
+        if discrepancy.proposed_end_time:
+            entry.end_time = discrepancy.proposed_end_time
+            update_fields["session_end_time"] = discrepancy.proposed_end_time
+        if discrepancy.proposed_date:
+            entry.recurrence_start_date = discrepancy.proposed_date
+        if update_fields:
+            sessions_to_update.update(**update_fields)
 
         if req_type == DiscrepancyRequest.RequestType.CANCEL:
             entry.status = TimetableEntry.Status.CANCELLED

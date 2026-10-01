@@ -343,6 +343,7 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
 class LectureSessionSerializer(serializers.ModelSerializer):
     timetable_entry_title = serializers.ReadOnlyField(source="timetable_entry.title")
     entry_type = serializers.ReadOnlyField(source="timetable_entry.entry_type")
+    course_id = serializers.ReadOnlyField(source="timetable_entry.course_id")
     course_code = serializers.ReadOnlyField(source="timetable_entry.course.code")
     course_title = serializers.ReadOnlyField(source="timetable_entry.course.title")
     course_level = serializers.ReadOnlyField(source="timetable_entry.course.level")
@@ -372,6 +373,7 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "timetable_entry",
             "timetable_entry_title",
             "entry_type",
+            "course_id",
             "course_code",
             "course_title",
             "course_level",

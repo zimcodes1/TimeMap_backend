@@ -26,11 +26,22 @@ from .services import (
 
 class DiscrepancyRequestViewSet(viewsets.ModelViewSet):
     serializer_class = DiscrepancyRequestSerializer
-    permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole]
+    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+
+    def get_permissions(self):
+        if self.action in ["approve", "reject"]:
+            return [IsAuthenticated(), IsPasswordResetDone(), IsAdminUserRole()]
+        return [IsAuthenticated(), IsPasswordResetDone()]
 
     def get_queryset(self):
         user = self.request.user
-        if not user.is_authenticated or user.role != "admin" or not hasattr(user, "admin_profile") or not user.admin_profile:
+        if not user.is_authenticated:
+            return DiscrepancyRequest.objects.none()
+
+        if user.role == "lecturer":
+            return DiscrepancyRequest.objects.filter(initiated_by=user).order_by("-created_at")
+
+        if user.role != "admin" or not hasattr(user, "admin_profile") or not user.admin_profile:
             return DiscrepancyRequest.objects.none()
 
         admin_prof = user.admin_profile
