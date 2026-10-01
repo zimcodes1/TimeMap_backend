@@ -122,14 +122,12 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.role == "student" and hasattr(user, "student_profile"):
-            dept = user.student_profile.department
-            return TimetableEntry.objects.filter(
-                Q(course__owning_department=dept)
-                | Q(course__owning_faculty=dept.faculty)
-                | Q(course__owning_school=dept.faculty.school)
-                | Q(course__owning_level="general")
-                | Q(venue__owning_department=dept)
-            ).distinct()
+            from courses.services import get_visible_courses_for_student
+            visible_courses = get_visible_courses_for_student(user.student_profile)
+            return TimetableEntry.objects.filter(course__in=visible_courses).distinct()
+
+        if user.role == "lecturer" and hasattr(user, "lecturer_profile"):
+            return TimetableEntry.objects.filter(course__lecturers=user.lecturer_profile).distinct()
 
         dept_qs = get_user_scope_departments(user)
         fac_qs = get_user_scope_faculties(user)
@@ -239,17 +237,20 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
         qs = LectureSession.objects.none()
 
         if user.role == "student" and hasattr(user, "student_profile"):
-            dept = user.student_profile.department
+            student = user.student_profile
+            from courses.services import get_visible_courses_for_student
+            visible_courses = get_visible_courses_for_student(student)
             qs = LectureSession.objects.filter(
-                Q(timetable_entry__course__owning_department=dept)
-                | Q(timetable_entry__course__owning_faculty=dept.faculty)
-                | Q(timetable_entry__course__owning_school=dept.faculty.school)
-                | Q(timetable_entry__course__owning_level="general")
+                timetable_entry__course__in=visible_courses
             ).distinct()
 
             # Non-class rep students cannot view previous past lectures
-            if not user.student_profile.is_class_rep:
+            if not student.is_class_rep:
                 qs = qs.filter(session_date__gte=date.today())
+        elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
+            qs = LectureSession.objects.filter(
+                timetable_entry__course__lecturers=user.lecturer_profile
+            ).distinct()
         else:
             dept_qs = get_user_scope_departments(user)
             fac_qs = get_user_scope_faculties(user)

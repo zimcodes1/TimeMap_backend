@@ -81,3 +81,57 @@ class SchedulingTests(APITestCase):
         res = self.client.post(url, payload, format="json")
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertEqual(res.data["registered_candidates_count"], 1)
+
+    def test_student_and_lecturer_session_scoping(self):
+        from accounts.models import LecturerStaff
+
+        # Create level 100 course and level 200 course
+        course100 = Course.objects.create(
+            code="CSC101", title="Intro to CS", level=100, owning_level="department", owning_department=self.dept
+        )
+        course200 = Course.objects.create(
+            code="CSC202", title="OOP", level=200, owning_level="department", owning_department=self.dept
+        )
+
+        # Create Lecturer
+        lec_user = User.objects.create_user(identifier="LEC_SCHED", password="password", role=User.Role.LECTURER, requires_password_reset=False)
+        lecturer = LecturerStaff.objects.create(user=lec_user, staff_id="LEC_SCHED", full_name="Dr. Sched", department=self.dept)
+        course200.lecturers.add(lecturer)
+
+        today = datetime.date.today()
+
+        # Timetable entries and sessions
+        entry100 = TimetableEntry.objects.create(
+            entry_type="lecture", title="CSC101 Lecture", course=course100, venue=self.venue,
+            start_time="09:00:00", end_time="11:00:00", created_by=self.admin, academic_session="2025/2026",
+        )
+        session100 = LectureSession.objects.create(
+            timetable_entry=entry100, session_date=today, session_start_time="09:00:00", session_end_time="11:00:00", venue=self.venue,
+        )
+
+        entry200 = TimetableEntry.objects.create(
+            entry_type="lecture", title="CSC202 Lecture", course=course200, venue=self.venue,
+            start_time="11:00:00", end_time="13:00:00", created_by=self.admin, academic_session="2025/2026",
+        )
+        session200 = LectureSession.objects.create(
+            timetable_entry=entry200, session_date=today, session_start_time="11:00:00", session_end_time="13:00:00", venue=self.venue,
+        )
+
+        # 1. Student (Level 100) queries /api/scheduling/sessions/
+        # Should only receive session100 (level 100) and NOT session200 (level 200)
+        self.client.force_authenticate(user=self.student_user)
+        res_stu = self.client.get("/api/scheduling/sessions/")
+        self.assertEqual(res_stu.status_code, status.HTTP_200_OK)
+        returned_ids = [s["id"] for s in res_stu.data]
+        self.assertIn(str(session100.id), [str(i) for i in returned_ids])
+        self.assertNotIn(str(session200.id), [str(i) for i in returned_ids])
+
+        # 2. Lecturer queries /api/scheduling/sessions/
+        # Should only receive session200 (assigned course) and NOT session100 (unassigned)
+        self.client.force_authenticate(user=lec_user)
+        res_lec = self.client.get("/api/scheduling/sessions/")
+        self.assertEqual(res_lec.status_code, status.HTTP_200_OK)
+        returned_lec_ids = [s["id"] for s in res_lec.data]
+        self.assertIn(str(session200.id), [str(i) for i in returned_lec_ids])
+        self.assertNotIn(str(session100.id), [str(i) for i in returned_lec_ids])
+

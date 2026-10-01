@@ -24,11 +24,15 @@ def get_visible_courses_for_student(student):
     fac = dept.faculty
     sch = fac.school
     prog = getattr(student, "program", None)
+    level = getattr(student, "level", None)
 
     # 1. Program match condition for department-level courses
-    program_filter = Q(program_scope=Course.ProgramScope.GENERAL)
+    program_filter = (
+        Q(target_program__isnull=True)
+        | Q(program_scope__in=["general", "all", ""])
+    )
     if prog:
-        program_filter |= Q(program_scope=Course.ProgramScope.PROGRAM, target_program=prog)
+        program_filter |= Q(target_program=prog)
 
     # 2. Default ownership matches
     default_q = (
@@ -39,9 +43,12 @@ def get_visible_courses_for_student(student):
     )
 
     # 3. Approved grants
-    grant_program_filter = Q(grant_scope=CourseAccessGrant.GrantScope.GENERAL)
+    grant_program_filter = (
+        Q(target_program__isnull=True)
+        | Q(grant_scope__in=["general", "all", ""])
+    )
     if prog:
-        grant_program_filter |= Q(grant_scope=CourseAccessGrant.GrantScope.PROGRAM, target_program=prog)
+        grant_program_filter |= Q(target_program=prog)
 
     approved_grant_course_ids = CourseAccessGrant.objects.filter(
         status=CourseAccessGrant.Status.APPROVED
@@ -52,6 +59,9 @@ def get_visible_courses_for_student(student):
     ).values_list("course_id", flat=True)
 
     qs = Course.objects.filter(default_q | Q(id__in=approved_grant_course_ids))
+
+    if level is not None:
+        qs = qs.filter(level=level)
 
     # Only show active semester courses (or courses without semester assigned)
     qs = qs.filter(Q(semester__is_active=True) | Q(semester__isnull=True))

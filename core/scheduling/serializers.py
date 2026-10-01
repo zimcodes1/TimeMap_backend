@@ -359,6 +359,9 @@ class LectureSessionSerializer(serializers.ModelSerializer):
     lecturers = serializers.SerializerMethodField()
     can_shift = serializers.SerializerMethodField()
     report_status = serializers.SerializerMethodField()
+    report_window_open = serializers.SerializerMethodField()
+    report_window_expires_at = serializers.SerializerMethodField()
+    report_id = serializers.SerializerMethodField()
     has_conflict = serializers.SerializerMethodField()
     conflict_reason = serializers.SerializerMethodField()
 
@@ -392,8 +395,49 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "status",
             "can_shift",
             "report_status",
+            "report_window_open",
+            "report_window_expires_at",
+            "report_id",
         )
         read_only_fields = ("id",)
+
+    def get_report_id(self, obj) -> str | None:
+        try:
+            if hasattr(obj, "report") and obj.report:
+                return str(obj.report.id)
+        except Exception:
+            pass
+        return None
+
+    def get_report_window_expires_at(self, obj) -> str | None:
+        try:
+            tz = timezone.get_current_timezone()
+            dt = datetime.datetime.combine(obj.session_date, obj.session_end_time)
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt, tz)
+            expiry = dt + datetime.timedelta(minutes=30)
+            return expiry.isoformat()
+        except Exception:
+            return None
+
+    def get_report_window_open(self, obj) -> bool:
+        if self.get_report_id(obj):
+            return False
+        try:
+            tz = timezone.get_current_timezone()
+            now = timezone.now()
+            start_dt = datetime.datetime.combine(obj.session_date, obj.session_start_time)
+            if timezone.is_naive(start_dt):
+                start_dt = timezone.make_aware(start_dt, tz)
+
+            end_dt = datetime.datetime.combine(obj.session_date, obj.session_end_time)
+            if timezone.is_naive(end_dt):
+                end_dt = timezone.make_aware(end_dt, tz)
+
+            expiry_dt = end_dt + datetime.timedelta(minutes=30)
+            return start_dt <= now <= expiry_dt
+        except Exception:
+            return False
 
     def get_has_conflict(self, obj) -> bool:
         if obj.timetable_entry:
@@ -421,7 +465,16 @@ class LectureSessionSerializer(serializers.ModelSerializer):
         course = getattr(obj.timetable_entry, "course", None)
         if not course:
             return []
-        return [l.full_name for l in course.lecturers.all()]
+        return [
+            {
+                "id": str(l.id),
+                "name": l.full_name,
+                "full_name": l.full_name,
+                "staff_id": l.staff_id,
+                "email": l.email or "",
+            }
+            for l in course.lecturers.all()
+        ]
 
     def get_can_shift(self, obj) -> bool:
         # Past sessions can NEVER be shifted
