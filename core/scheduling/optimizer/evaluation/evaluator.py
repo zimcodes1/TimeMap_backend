@@ -6,7 +6,7 @@ from ..constraints.daily_limits import check_daily_limits
 from ..constraints.lecturers import check_lecturer_conflicts
 from ..constraints.occurrences import check_occurrence_days
 from ..constraints.students import check_student_conflicts
-from ..constraints.venues import check_venue_conflicts
+from ..constraints.venues import check_pre_existing_conflicts, check_venue_conflicts
 from ..models.assignment import Assignment
 from ..models.problem import SchedulingProblem
 
@@ -17,6 +17,10 @@ WEIGHT_VENUE_CONFLICT = 5000
 WEIGHT_OCCURRENCE_DAY = 5000
 WEIGHT_DAILY_LIMIT = 2000
 WEIGHT_CAPACITY_OVERFLOW = 1
+# Pre-existing conflicts (clashes with published higher-scope entries) carry the
+# highest penalty — even more severe than student conflicts — because they represent
+# real-world scheduling impossibilities rather than in-plan clashes.
+WEIGHT_PRE_EXISTING_CONFLICT = 20000
 
 
 @dataclass
@@ -31,9 +35,10 @@ class EvaluationResult:
     daily_limit_violations: int
     occurrence_day_violations: int
     capacity_penalty: int
+    pre_existing_conflicts: int = 0
 
-    total_weighted_penalty: float
-    fitness: float
+    total_weighted_penalty: float = 0.0
+    fitness: float = 0.0
 
     # Detailed list of diagnostic violation items
     conflict_details: List[Dict[str, Any]] = field(default_factory=list)
@@ -46,6 +51,7 @@ class EvaluationResult:
             + self.venue_conflicts
             + self.daily_limit_violations
             + self.occurrence_day_violations
+            + self.pre_existing_conflicts
         )
 
     @property
@@ -57,12 +63,14 @@ class EvaluationResult:
         return self.hard_conflicts == 0 and self.capacity_penalty == 0
 
     @property
-    def lexicographic_rank(self) -> Tuple[int, int, int, int, int, int]:
+    def lexicographic_rank(self) -> Tuple[int, int, int, int, int, int, int]:
         """
         Prioritized comparison tuple:
         Lower tuple values represent superior candidates.
+        Pre-existing conflicts are ranked first as the most critical constraint.
         """
         return (
+            self.pre_existing_conflicts,
             self.student_conflicts,
             self.lecturer_conflicts,
             self.venue_conflicts,
@@ -78,10 +86,22 @@ def evaluate(
     collect_details: bool = False,
 ) -> EvaluationResult:
     """
-    Evaluates a candidate schedule against all 6 constraint handlers.
+    Evaluates a candidate schedule against all constraint handlers.
     Calculates independent counters, weighted penalty, lexicographic tuple, and fitness.
+
+    Constraint priority (highest to lowest penalty weight):
+      1. Pre-existing conflicts (clash with higher-scope published timetable) — 20 000
+      2. Student group clashes — 10 000
+      3. Lecturer double-booking — 5 000
+      4. Venue double-booking — 5 000
+      5. Occurrence-day separation — 5 000
+      6. Daily lecture limit — 2 000
+      7. Capacity overflow — 1 (soft)
     """
-    # 1. Student clashes (hardest / highest priority)
+    # 0. Clashes with already-published higher-scope timetable (hardest / highest priority)
+    pre_count, pre_details = check_pre_existing_conflicts(assignments, problem)
+
+    # 1. Student clashes (hard / high priority)
     stu_count, stu_details = check_student_conflicts(assignments, problem)
 
     # 2. Lecturer double-booking (hard)
@@ -101,7 +121,8 @@ def evaluate(
 
     # Calculate weighted penalty
     total_penalty = (
-        stu_count * WEIGHT_STUDENT_CONFLICT
+        pre_count * WEIGHT_PRE_EXISTING_CONFLICT
+        + stu_count * WEIGHT_STUDENT_CONFLICT
         + lec_count * WEIGHT_LECTURER_CONFLICT
         + ven_count * WEIGHT_VENUE_CONFLICT
         + occ_day_count * WEIGHT_OCCURRENCE_DAY
@@ -114,6 +135,7 @@ def evaluate(
 
     all_details: List[Dict[str, Any]] = []
     if collect_details:
+        all_details.extend(pre_details)
         all_details.extend(stu_details)
         all_details.extend(lec_details)
         all_details.extend(ven_details)
@@ -128,8 +150,8 @@ def evaluate(
         daily_limit_violations=day_lim_count,
         occurrence_day_violations=occ_day_count,
         capacity_penalty=cap_penalty,
+        pre_existing_conflicts=pre_count,
         total_weighted_penalty=total_penalty,
         fitness=fitness,
         conflict_details=all_details,
     )
-

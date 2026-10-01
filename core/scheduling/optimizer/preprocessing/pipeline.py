@@ -8,19 +8,113 @@ from ..models.student_group import StudentGroup
 from ..models.venue import VenueData
 from .conflicts import build_student_conflict_graph
 from .occurrences import expand_occurrences
-from .slots import build_valid_slots
+from .slots import PERIODS, build_valid_slots
 from .venues import build_allowed_venues_map
+
+
+
+def _slot_id(day_code: str, start_time_str: str) -> str | None:
+    """
+    Reconstructs a Slot.slot_id (e.g. "MO_08:00-10:00") from a TimetableEntry's
+    day code and start_time string.  Returns None if the period is unrecognised.
+    """
+    for idx, start, end in PERIODS:
+        if start_time_str.startswith(start[:5]):
+            return f"{day_code}_{start}-{end}"
+    return None
+
+
+def build_blocked_venue_slots_from_db(
+    semester_id: int | str,
+    scope_type: str,
+    scope_id: int | str,
+) -> Dict[int | str, Set[str]]:
+    """
+    Queries published TimetableEntry records that come from higher-scope published
+    runs (i.e. a faculty run when we are doing department, or a school run when we
+    are doing faculty/department) for the same semester and builds a mapping of:
+
+        venue_id -> set of slot_ids that are already occupied
+
+    These slots are passed into the SchedulingProblem so the GA can treat them as
+    hard-blocked and avoid placing any new course there.
+
+    Scope hierarchy:
+        department  -> blocked by: published faculty-level AND school-level entries
+        faculty     -> blocked by: published school-level entries
+        school      -> nothing is blocked (top scope)
+    """
+    from scheduling.models import TimetableGenerationRun
+
+    # School-level generation: nothing pre-exists above it
+    if scope_type == "school":
+        return {}
+
+    # Find all TimetableEntry records for this semester that belong to published
+    # higher-scope generation runs.
+    published_scope_types: List[str] = []
+    if scope_type == "department":
+        # blocked by faculty-scope and school-scope published runs
+        published_scope_types = ["faculty", "school"]
+    elif scope_type == "faculty":
+        # blocked by school-scope published runs
+        published_scope_types = ["school"]
+
+    # Get IDs of published runs at higher scope for this semester
+    higher_published_run_ids = list(
+        TimetableGenerationRun.objects.filter(
+            semester_id=semester_id,
+            is_published=True,
+            scope_type__in=published_scope_types,
+        ).values_list("id", flat=True)
+    )
+
+    if not higher_published_run_ids:
+        return {}
+
+    # We need to find TimetableEntry rows that were created BY those runs.
+    # Unfortunately TimetableEntry has no FK back to TimetableGenerationRun.
+    # The best proxy is: entries created by the admin who initiated those runs,
+    # for the same semester. However that is fragile if the same admin created
+    # manual entries too.
+    #
+    # A more reliable approach: for each published run, look at its
+    # assignments_payload and reconstruct the blocked (venue, slot) pairs
+    # directly from the JSON — no DB join needed and 100% accurate.
+
+    blocked: Dict[int | str, Set[str]] = {}
+
+    for run in TimetableGenerationRun.objects.filter(id__in=higher_published_run_ids):
+        for item in (run.assignments_payload or []):
+            venue_id = item.get("venue_id")
+            day_code = item.get("day")  # "MO", "TU", etc.
+            start_time = item.get("start_time", "")  # "08:00:00" or "08:00"
+
+            if not venue_id or not day_code or not start_time:
+                continue
+
+            sid = _slot_id(day_code, str(start_time))
+            if sid is None:
+                continue
+
+            blocked.setdefault(venue_id, set()).add(sid)
+
+    return blocked
 
 
 def build_scheduling_problem_from_db(
     semester_id: int | str,
     scope_type: str,
-    scope_id: int | str, 
+    scope_id: int | str,
 ) -> SchedulingProblem:
     """
     Database adapter: queries Django models for the specified scope and active semester,
     resolves courses, student cohorts, lecturer allocations, and allowed venues,
     and returns a pure-data SchedulingProblem ready for GA optimization.
+
+    When a higher-scope published timetable exists for the same semester, this
+    function also builds a blocked_venue_slots map so the GA avoids assigning
+    courses to slots already occupied by those published entries.
     """
     from courses.models import Course, CourseAccessGrant
     from hierarchy.models import Department, Faculty, Program, School
@@ -329,6 +423,14 @@ def build_scheduling_problem_from_db(
     # 10. Build student conflict graph
     conflict_graph, shared_groups = build_student_conflict_graph(courses_data)
 
+    # 11. Build blocked venue-slots from higher-scope published timetables so the
+    #     GA never places a new course in a slot already occupied by those runs.
+    blocked_venue_slots = build_blocked_venue_slots_from_db(
+        semester_id=semester_id,
+        scope_type=scope_type,
+        scope_id=scope_id,
+    )
+
     return SchedulingProblem(
         occurrences=occurrences,
         valid_slots=valid_slots,
@@ -338,10 +440,10 @@ def build_scheduling_problem_from_db(
         lecturers_by_course=lecturers_by_course,
         lecturer_details=lecturer_details,
         allowed_venues_by_course=allowed_venues_by_course,
+        blocked_venue_slots=blocked_venue_slots,
         daily_lecture_limit=3,
         scope_type=scope_type,
         scope_id=scope_id,
         scope_name=scope_name,
         semester_id=semester.id,
     )
-

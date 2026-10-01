@@ -15,6 +15,7 @@ def generate_conflict_report(
     status_label = "OPTIMAL" if evaluation.is_optimal else ("FEASIBLE" if evaluation.is_feasible else "BEST_AVAILABLE")
 
     # Group conflict details by category
+    pre_existing_conflicts = [d for d in evaluation.conflict_details if d.get("type") == "pre_existing_conflict"]
     student_conflicts = [d for d in evaluation.conflict_details if d.get("type") == "student_conflict"]
     lecturer_conflicts = [d for d in evaluation.conflict_details if d.get("type") == "lecturer_conflict"]
     venue_conflicts = [d for d in evaluation.conflict_details if d.get("type") == "venue_conflict"]
@@ -30,6 +31,7 @@ def generate_conflict_report(
         "occurrences_scheduled": total_occurrences,
         "hard_conflicts_total": evaluation.hard_conflicts,
         "summary": {
+            "pre_existing_conflicts": evaluation.pre_existing_conflicts,
             "student_conflicts": evaluation.student_conflicts,
             "lecturer_conflicts": evaluation.lecturer_conflicts,
             "venue_conflicts": evaluation.venue_conflicts,
@@ -41,6 +43,7 @@ def generate_conflict_report(
             "raw_fitness": round(evaluation.fitness, 6),
         },
         "details": {
+            "pre_existing_conflicts": pre_existing_conflicts,
             "student_conflicts": student_conflicts,
             "lecturer_conflicts": lecturer_conflicts,
             "venue_conflicts": venue_conflicts,
@@ -49,6 +52,7 @@ def generate_conflict_report(
             "capacity_overflows": capacity_overflows,
             "capacity_violations": capacity_overflows,
         },
+        "pre_existing_conflicts": pre_existing_conflicts,
         "student_conflicts": student_conflicts,
         "lecturer_conflicts": lecturer_conflicts,
         "venue_conflicts": venue_conflicts,
@@ -57,4 +61,3 @@ def generate_conflict_report(
         "capacity_overflows": capacity_overflows,
         "capacity_violations": capacity_overflows,
     }
-

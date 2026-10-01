@@ -30,6 +30,12 @@ class SchedulingProblem:
     )
     daily_lecture_limit: int = 3
 
+    # Pre-existing slot occupancy from higher-scope published timetables.
+    # Maps venue_id -> set of slot_ids (e.g. "MO_08:00-10:00") already occupied
+    # by a published run at a broader scope (faculty or school level).
+    # The GA must treat these as hard-blocked and never assign a course there.
+    blocked_venue_slots: Dict[int | str, Set[str]] = field(default_factory=dict)
+
     # Metadata
     scope_type: str = "school"
     scope_id: int | str = ""
@@ -51,4 +57,3 @@ class SchedulingProblem:
     @property
     def lecturers(self) -> Dict[int | str, LecturerData]:
         return self.lecturer_details
-

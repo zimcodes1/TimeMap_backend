@@ -9,7 +9,7 @@ def check_venue_conflicts(
     problem: SchedulingProblem,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     """
-    Evaluates venue double-bookings.
+    Evaluates venue double-bookings within the current generation's chromosome.
     A conflict occurs when two distinct course occurrences are assigned to the exact
     same venue during the exact same time slot.
     Returns:
@@ -48,3 +48,46 @@ def check_venue_conflicts(
 
     return conflict_count, conflicts
 
+
+def check_pre_existing_conflicts(
+    assignments: List[Assignment],
+    problem: SchedulingProblem,
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """
+    Detects assignments that collide with slots already occupied by a higher-scope
+    published timetable (stored in problem.blocked_venue_slots).
+
+    This is treated as a HARD constraint: any such placement is a direct conflict
+    with an existing, live lecture and must be penalised heavily.
+
+    Returns:
+      (conflict_count, conflict_details_list)
+    """
+    if not problem.blocked_venue_slots:
+        return 0, []
+
+    conflicts: List[Dict[str, Any]] = []
+    conflict_count = 0
+
+    for a in assignments:
+        blocked = problem.blocked_venue_slots.get(a.venue_id)
+        if blocked and a.slot.slot_id in blocked:
+            conflict_count += 1
+            venue = problem.venues.get(a.venue_id)
+            venue_name = venue.name if venue else f"Venue #{a.venue_id}"
+            conflicts.append(
+                {
+                    "type": "pre_existing_conflict",
+                    "venue_id": str(a.venue_id),
+                    "venue_name": venue_name,
+                    "course": a.course_code,
+                    "occurrence": a.occurrence.occurrence_id,
+                    "slot": str(a.slot),
+                    "detail": (
+                        "Slot is already occupied by a higher-scope published timetable. "
+                        "This placement creates a real-world clash."
+                    ),
+                }
+            )
+
+    return conflict_count, conflicts
