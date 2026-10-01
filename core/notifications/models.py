@@ -4,6 +4,7 @@ from django.db import models
 
 class Notification(models.Model):
     class NotificationType(models.TextChoices):
+        DISCREPANCY_SUBMITTED = "discrepancy_submitted", "Discrepancy Submitted"
         DISCREPANCY_APPROVED = "discrepancy_approved", "Discrepancy Approved"
         DISCREPANCY_REJECTED = "discrepancy_rejected", "Discrepancy Rejected"
         SESSION_SHIFTED = "session_shifted", "Session Shifted"
