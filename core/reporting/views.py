@@ -190,3 +190,21 @@ class AnalyticsViewSet(viewsets.ViewSet):
             group_by=request.query_params.get("group_by", "venue"),
         )
         return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Get role-based dashboard statcards", responses={200: dict})
+    @action(detail=False, methods=["get"], url_path="dashboard-statcards")
+    def dashboard_statcards(self, request):
+        from .analytics import get_dashboard_statcards
+        data = get_dashboard_statcards(user=request.user)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Get scope-specific venue capacity deficit analytics", responses={200: dict})
+    @action(detail=False, methods=["get"], url_path="capacity-deficit")
+    def capacity_deficit(self, request):
+        from .analytics import get_venue_capacity_deficit_analytics
+        semester_id = request.query_params.get("semester_id")
+        data = get_venue_capacity_deficit_analytics(
+            user=request.user,
+            semester_id=semester_id,
+        )
+        return Response(data, status=status.HTTP_200_OK)
