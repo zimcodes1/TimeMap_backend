@@ -670,3 +670,407 @@ def get_discrepancy_frequency_analytics(
             "by_request_type": by_type,
         }
     }
+
+
+def get_dashboard_statcards(user):
+    """
+    Returns role-based dashboard statcards:
+    - System admin:
+      * Active Venues (entire system: all schools combined)
+      * Total number of schools
+      * Total hard conflicts
+      * System Quality score (overall quality score calculated from a weighted calculation of the conflicts / constraints)
+    - School admin:
+      * Active venues in school
+      * Total number of faculties
+      * Total lecture hold-rate for semester (entire school)
+    - Faculty admin:
+      * Active venues in faculty
+      * Total number of departments
+      * Total lecture hold-rate for semester (entire faculty)
+    - Department admin:
+      * Active venues in department
+      * Total number of courses in semester
+      * Discrepancy Queue
+      * Total unreported sessions (this week)
+    """
+    from scheduling.models import Semester, TimetableEntry, TimetableGenerationRun, LectureSession
+    from hierarchy.models import School, Faculty, Department
+    from courses.models import Course
+    from venues.models import Venue
+    from discrepancies.models import DiscrepancyRequest
+
+    admin_prof = getattr(user, "admin_profile", None)
+    if user.is_superuser or (admin_prof and admin_prof.level in ["system", "university"]):
+        role_level = "system"
+    elif admin_prof and admin_prof.level == "school":
+        role_level = "school"
+    elif admin_prof and admin_prof.level == "faculty":
+        role_level = "faculty"
+    elif admin_prof and admin_prof.level == "department":
+        role_level = "department"
+    else:
+        role_level = "system" if user.is_staff else "department"
+
+    active_semester = Semester.objects.filter(is_active=True).first() or Semester.objects.first()
+    active_semester_id = active_semester.id if active_semester else None
+
+    if role_level == "system":
+        active_venues = Venue.objects.filter(is_active=True).count()
+        total_schools = School.objects.count()
+
+        # Hard conflicts from latest completed generation runs per scope or live entries
+        gen_runs = TimetableGenerationRun.objects.filter(status=TimetableGenerationRun.Status.COMPLETED)
+        if active_semester:
+            gen_runs = gen_runs.filter(semester=active_semester)
+
+        latest_runs = {}
+        for run in gen_runs.order_by("-created_at"):
+            key = (run.scope_type, run.scope_id)
+            if key not in latest_runs:
+                latest_runs[key] = run
+
+        if latest_runs:
+            hard_conflicts = sum(r.hard_conflicts_count for r in latest_runs.values())
+            total_weight = 0
+            weighted_quality = 0.0
+            for r in latest_runs.values():
+                w = max(1, r.hard_conflicts_count + r.student_conflicts_count + 10)
+                q = None
+                if isinstance(r.generation_metrics, dict):
+                    q = r.generation_metrics.get("quality_score")
+                if q is None:
+                    q = r.fitness_score if r.fitness_score > 0 else (
+                        0.95 if r.hard_conflicts_count == 0 else max(0.0, 0.85 - (r.hard_conflicts_count * 0.05))
+                    )
+                weighted_quality += float(q) * w
+                total_weight += w
+            system_quality_val = round((weighted_quality / max(1, total_weight)) * 100, 1)
+        else:
+            entries = TimetableEntry.objects.all()
+            if active_semester:
+                entries = entries.filter(semester=active_semester)
+            venue_clashes = entries.values("venue_id", "start_time", "end_time", "recurrence_rule").annotate(c=Count("id")).filter(c__gt=1)
+            hard_conflicts = venue_clashes.count()
+            if hard_conflicts == 0:
+                system_quality_val = 98.5
+            else:
+                system_quality_val = max(10.0, round(100.0 - (hard_conflicts * 4.5), 1))
+
+        cards = [
+            {
+                "id": "active_venues",
+                "title": "Active Venues",
+                "value": active_venues,
+                "unit": "Venues",
+                "badge": "All Schools",
+                "badge_variant": "success",
+                "description": "Entire system: all schools combined",
+            },
+            {
+                "id": "total_schools",
+                "title": "Total Schools",
+                "value": total_schools,
+                "unit": "Schools",
+                "badge": "Institutional",
+                "badge_variant": "neutral",
+                "description": "Total academic schools in system",
+            },
+            {
+                "id": "hard_conflicts",
+                "title": "Total Hard Conflicts",
+                "value": hard_conflicts,
+                "unit": "Conflicts",
+                "badge": "Zero Conflict" if hard_conflicts == 0 else "Action Required",
+                "badge_variant": "success" if hard_conflicts == 0 else "danger",
+                "description": "Cross-venue and instructor collisions",
+            },
+            {
+                "id": "quality_score",
+                "title": "System Quality Score",
+                "value": f"{system_quality_val}%",
+                "unit": "Quality",
+                "badge": "Optimal" if system_quality_val >= 90 else ("Good" if system_quality_val >= 75 else "Needs Review"),
+                "badge_variant": "success" if system_quality_val >= 90 else ("warning" if system_quality_val >= 75 else "danger"),
+                "description": "Weighted conflict & constraint optimization",
+            },
+        ]
+
+    elif role_level == "school":
+        school = admin_prof.scope_school if admin_prof else None
+        if school:
+            active_venues = Venue.objects.filter(is_active=True).filter(
+                Q(owning_school=school)
+                | Q(owning_faculty__school=school)
+                | Q(owning_department__faculty__school=school)
+            ).distinct().count()
+            total_faculties = Faculty.objects.filter(school=school).count()
+        else:
+            active_venues = Venue.objects.filter(is_active=True).count()
+            total_faculties = Faculty.objects.count()
+
+        hold_rate_res = get_lecture_hold_rate_analytics(
+            user=user,
+            semester_id=active_semester_id,
+        )
+        hold_rate_pct = hold_rate_res.get("summary", {}).get("hold_rate_percentage", 0)
+
+        cards = [
+            {
+                "id": "active_venues",
+                "title": "Active Venues in School",
+                "value": active_venues,
+                "unit": "Venues",
+                "badge": getattr(school, "code", "School Scope"),
+                "badge_variant": "success",
+                "description": "Venues in this school",
+            },
+            {
+                "id": "total_faculties",
+                "title": "Total Faculties",
+                "value": total_faculties,
+                "unit": "Faculties",
+                "badge": "Constituent",
+                "badge_variant": "neutral",
+                "description": "Faculties under this school",
+            },
+            {
+                "id": "hold_rate",
+                "title": "Semester Hold Rate",
+                "value": f"{hold_rate_pct}%",
+                "unit": "Hold Rate",
+                "badge": "Optimal" if hold_rate_pct >= 75 else ("Fair" if hold_rate_pct >= 50 else "Critical"),
+                "badge_variant": "success" if hold_rate_pct >= 75 else ("warning" if hold_rate_pct >= 50 else "danger"),
+                "description": "Total lecture hold-rate for semester (entire school)",
+            },
+        ]
+
+    elif role_level == "faculty":
+        faculty = admin_prof.scope_faculty if admin_prof else None
+        if faculty:
+            active_venues = Venue.objects.filter(is_active=True).filter(
+                Q(owning_faculty=faculty)
+                | Q(owning_department__faculty=faculty)
+            ).distinct().count()
+            total_departments = Department.objects.filter(faculty=faculty).count()
+        else:
+            active_venues = Venue.objects.filter(is_active=True).count()
+            total_departments = Department.objects.count()
+
+        hold_rate_res = get_lecture_hold_rate_analytics(
+            user=user,
+            faculty_id=str(faculty.id) if faculty else None,
+            semester_id=active_semester_id,
+        )
+        hold_rate_pct = hold_rate_res.get("summary", {}).get("hold_rate_percentage", 0)
+
+        cards = [
+            {
+                "id": "active_venues",
+                "title": "Active Venues in Faculty",
+                "value": active_venues,
+                "unit": "Venues",
+                "badge": getattr(faculty, "code", "Faculty Scope"),
+                "badge_variant": "success",
+                "description": "Venues in this faculty",
+            },
+            {
+                "id": "total_departments",
+                "title": "Total Departments",
+                "value": total_departments,
+                "unit": "Departments",
+                "badge": "Academic Units",
+                "badge_variant": "neutral",
+                "description": "Departments under this faculty",
+            },
+            {
+                "id": "hold_rate",
+                "title": "Semester Hold Rate",
+                "value": f"{hold_rate_pct}%",
+                "unit": "Hold Rate",
+                "badge": "Optimal" if hold_rate_pct >= 75 else ("Fair" if hold_rate_pct >= 50 else "Critical"),
+                "badge_variant": "success" if hold_rate_pct >= 75 else ("warning" if hold_rate_pct >= 50 else "danger"),
+                "description": "Total lecture hold-rate for semester (entire faculty)",
+            },
+        ]
+
+    else:  # Department Admin
+        dept = admin_prof.scope_department if admin_prof else None
+        if dept:
+            active_venues = Venue.objects.filter(is_active=True).filter(
+                Q(owning_department=dept) | Q(timetable_entries__course__owning_department=dept)
+            ).distinct().count()
+            courses_qs = Course.objects.filter(owning_department=dept)
+            if active_semester:
+                courses_qs = courses_qs.filter(semester=active_semester)
+            total_courses = courses_qs.count()
+            discrepancy_queue = DiscrepancyRequest.objects.filter(
+                status=DiscrepancyRequest.Status.PENDING,
+                timetable_entry__course__owning_department=dept,
+            ).distinct().count()
+        else:
+            active_venues = Venue.objects.filter(is_active=True).count()
+            courses_qs = Course.objects.all()
+            if active_semester:
+                courses_qs = courses_qs.filter(semester=active_semester)
+            total_courses = courses_qs.count()
+            discrepancy_queue = DiscrepancyRequest.objects.filter(status=DiscrepancyRequest.Status.PENDING).count()
+
+        today = datetime.date.today()
+        week_start = today - datetime.timedelta(days=today.weekday())
+        unreported_qs = LectureSession.objects.filter(
+            session_date__range=(week_start, today),
+            report__isnull=True,
+        ).exclude(
+            status__in=[
+                LectureSession.Status.CANCELLED,
+                LectureSession.Status.POSTPONED,
+                LectureSession.Status.HELD,
+                LectureSession.Status.NOT_HELD,
+            ]
+        )
+        if dept:
+            unreported_qs = unreported_qs.filter(timetable_entry__course__owning_department=dept)
+        unreported_this_week = unreported_qs.distinct().count()
+
+        cards = [
+            {
+                "id": "active_venues",
+                "title": "Active Venues",
+                "value": active_venues,
+                "unit": "Venues",
+                "badge": getattr(dept, "code", "Dept Scope"),
+                "badge_variant": "success",
+                "description": "Active venues in department",
+            },
+            {
+                "id": "total_courses",
+                "title": "Total Courses in Semester",
+                "value": total_courses,
+                "unit": "Courses",
+                "badge": "Semester Scope",
+                "badge_variant": "neutral",
+                "description": "Department course offerings",
+            },
+            {
+                "id": "discrepancy_queue",
+                "title": "Discrepancy Queue",
+                "value": discrepancy_queue,
+                "unit": "Pending",
+                "badge": "Requires Action" if discrepancy_queue > 0 else "Queue Clear",
+                "badge_variant": "warning" if discrepancy_queue > 0 else "success",
+                "description": "Pending requests requiring resolution",
+            },
+            {
+                "id": "unreported_sessions",
+                "title": "Unreported Sessions (This Week)",
+                "value": unreported_this_week,
+                "unit": "Sessions",
+                "badge": "Audit Required" if unreported_this_week > 0 else "Up to Date",
+                "badge_variant": "danger" if unreported_this_week > 0 else "success",
+                "description": "Sessions this week awaiting rep report",
+            },
+        ]
+
+    return {
+        "role_level": role_level,
+        "cards": cards,
+    }
+
+
+def get_venue_capacity_deficit_analytics(user, semester_id=None):
+    """
+    Computes average venue capacity deficit for School, Faculty, and Department admins.
+    Excludes System Admin (is_applicable=False).
+    """
+    admin_prof = getattr(user, "admin_profile", None)
+    if user.is_superuser or (admin_prof and admin_prof.level in ["system", "university"]):
+        return {
+            "role_level": "system",
+            "is_applicable": False,
+            "message": "System Administrator oversees all schools. Capacity deficit is monitored at school, faculty, and department levels.",
+        }
+
+    dept_qs = get_user_scope_departments(user)
+    from scheduling.models import Semester, TimetableEntry
+    from student_counts.models import ProgramStudentCount
+
+    if not semester_id:
+        active_semester = Semester.objects.filter(is_active=True).first() or Semester.objects.first()
+        semester_id = active_semester.id if active_semester else None
+
+    entries_qs = TimetableEntry.objects.filter(
+        course__owning_department__in=dept_qs
+    ).select_related("venue", "course", "course__target_program", "course__owning_department")
+    if semester_id:
+        entries_qs = entries_qs.filter(semester_id=semester_id)
+
+    counts_map = {}
+    for sc in ProgramStudentCount.objects.select_related("program"):
+        counts_map[(sc.program_id, sc.level)] = sc.count
+
+    total_analyzed = 0
+    deficits = []
+    overcrowded_count = 0
+
+    for entry in entries_qs:
+        venue = entry.venue
+        if not venue or not venue.capacity:
+            continue
+
+        course = entry.course
+        cohort_size = 50
+        if course:
+            if course.target_program_id and (course.target_program_id, course.level) in counts_map:
+                cohort_size = counts_map[(course.target_program_id, course.level)]
+            elif course.owning_department_id:
+                matching = [c for (p_id, lvl), c in counts_map.items() if lvl == course.level]
+                if matching:
+                    cohort_size = int(sum(matching) / len(matching))
+
+        deficit = max(0, cohort_size - venue.capacity)
+        deficits.append(deficit)
+        total_analyzed += 1
+        if deficit > 0:
+            overcrowded_count += 1
+
+    if total_analyzed == 0 or len(deficits) == 0:
+        avg_deficit = 0.0
+        peak_deficit = 0
+        overcrowd_pct = 0.0
+    else:
+        avg_deficit = round(sum(deficits) / total_analyzed, 1)
+        peak_deficit = max(deficits, default=0)
+        overcrowd_pct = round((overcrowded_count / total_analyzed) * 100, 1)
+
+    scope_name = "Scope"
+    if admin_prof:
+        if admin_prof.level == "school" and admin_prof.scope_school:
+            scope_name = admin_prof.scope_school.name
+        elif admin_prof.level == "faculty" and admin_prof.scope_faculty:
+            scope_name = admin_prof.scope_faculty.name
+        elif admin_prof.level == "department" and admin_prof.scope_department:
+            scope_name = admin_prof.scope_department.name
+
+    if avg_deficit == 0 or overcrowded_count == 0:
+        status_variant = "success"
+        remark = f"Optimal Capacity — All allocated venues in {scope_name} adequately accommodate expected cohort enrollments with zero seating shortfall."
+    elif avg_deficit <= 15:
+        status_variant = "warning"
+        remark = f"Moderate Deficit — Venues in {scope_name} experience an average seating deficit of {avg_deficit} seats across {overcrowded_count} scheduled session(s). Minor room reassignments or secondary seating recommended."
+    else:
+        status_variant = "danger"
+        remark = f"Critical Capacity Deficit — Severe overcrowding detected in {scope_name} with an average deficit of {avg_deficit} seats per session (peak deficit: {peak_deficit} seats). Immediate venue upgrades or section splitting required."
+
+    return {
+        "role_level": admin_prof.level if admin_prof else "department",
+        "is_applicable": True,
+        "scope_name": scope_name,
+        "average_deficit": avg_deficit,
+        "peak_deficit": peak_deficit,
+        "total_sessions_analyzed": total_analyzed,
+        "overcrowded_sessions_count": overcrowded_count,
+        "overcrowding_percentage": overcrowd_pct,
+        "case_aware_remark": remark,
+        "status_variant": status_variant,
+    }
