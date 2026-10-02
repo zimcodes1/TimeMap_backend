@@ -35,12 +35,16 @@ class ClassRepReportViewSet(viewsets.ModelViewSet):
         qs = ClassRepReport.objects.all()
 
         if user.role == "student" and hasattr(user, "student_profile"):
+            if not user.student_profile.is_class_rep:
+                return ClassRepReport.objects.none()
             qs = qs.filter(reported_by=user.student_profile)
         elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
             qs = qs.filter(lecture_session__timetable_entry__course__lecturers=user.lecturer_profile)
         elif user.role == "admin" and hasattr(user, "admin_profile"):
             dept_qs = get_user_scope_departments(user)
             qs = qs.filter(lecture_session__timetable_entry__course__owning_department__in=dept_qs)
+        else:
+            return ClassRepReport.objects.none()
 
         # Filters
         held_param = self.request.query_params.get("held")

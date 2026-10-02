@@ -7,6 +7,8 @@ from .views import (
     LecturerViewSet,
     LoginView,
     PasswordResetView,
+    RegistrationOptionsView,
+    StudentSignupView,
     StudentViewSet,
     UserProfileView,
 )
@@ -18,6 +20,8 @@ router.register(r"admins", AdminOfficerViewSet, basename="admin-officer")
 
 urlpatterns = [
     path("login/", LoginView.as_view(), name="auth_login"),
+    path("signup/", StudentSignupView.as_view(), name="auth_student_signup"),
+    path("registration-options/", RegistrationOptionsView.as_view(), name="auth_registration_options"),
     path("token/refresh/", TokenRefreshView.as_view(), name="auth_token_refresh"),
     path("password-reset/", PasswordResetView.as_view(), name="auth_password_reset"),
     path("profile/", UserProfileView.as_view(), name="user_profile"),
