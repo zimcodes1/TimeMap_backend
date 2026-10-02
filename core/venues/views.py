@@ -113,11 +113,11 @@ class VenueViewSet(viewsets.ModelViewSet):
             except Exception:
                 pass
 
-        if user.role == "admin" and hasattr(user, "admin_profile"):
+        if (user.role in ["admin", "system_admin"] or user.is_superuser) and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
             level = admin_prof.level
 
-            if level == "university":
+            if level in ["system", "university"]:
                 return Venue.objects.all().order_by("name")
             elif level == "school":
                 if not admin_prof.scope_school:

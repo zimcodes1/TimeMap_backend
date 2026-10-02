@@ -4,11 +4,11 @@ from rest_framework.permissions import BasePermission
 
 class CanManageSchool(BasePermission):
     """
-    Only University-level admins or superusers can create, update, or delete schools.
+    Only System/University-level admins or superusers can create, update, or delete schools.
     Read-only access is permitted for all authenticated users (scoped by get_user_scope_schools).
     """
 
-    message = "Only University level admins or superusers can create, edit, or delete schools."
+    message = "Only System level admins or superusers can create, edit, or delete schools."
 
     def has_permission(self, request, view):
         if request.method in permissions.SAFE_METHODS:
@@ -19,9 +19,9 @@ class CanManageSchool(BasePermission):
         if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             return True
         return bool(
-            user.role == "admin"
+            (user.role in ["admin", "system_admin"] or user.is_superuser)
             and hasattr(user, "admin_profile")
-            and user.admin_profile.level == "university"
+            and user.admin_profile.level in ["system", "university"]
         )
 
 

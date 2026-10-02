@@ -91,8 +91,19 @@ class UserProfileView(APIView):
             profile_data = StudentProfileSerializer(user.student_profile).data
         elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
             profile_data = LecturerProfileSerializer(user.lecturer_profile).data
-        elif user.role == "admin" and hasattr(user, "admin_profile"):
-            profile_data = AdminProfileSerializer(user.admin_profile).data
+        elif user.role in ["admin", "system_admin"] or user.is_superuser:
+            if not hasattr(user, "admin_profile") and user.is_superuser:
+                AdminOfficer.objects.get_or_create(
+                    user=user,
+                    defaults={
+                        "staff_id": user.identifier,
+                        "full_name": f"System Administrator ({user.identifier})",
+                        "level": AdminOfficer.Level.SYSTEM,
+                        "email": "",
+                    },
+                )
+            if hasattr(user, "admin_profile"):
+                profile_data = AdminProfileSerializer(user.admin_profile).data
 
         return Response(
             {

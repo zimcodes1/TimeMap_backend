@@ -27,7 +27,17 @@ class UserManager(BaseUserManager):
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True.")
 
-        return self.create_user(identifier, password, **extra_fields)
+        user = self.create_user(identifier, password, **extra_fields)
+        AdminOfficer.objects.update_or_create(
+            user=user,
+            defaults={
+                "staff_id": user.identifier,
+                "full_name": extra_fields.get("full_name") or f"System Administrator ({user.identifier})",
+                "level": AdminOfficer.Level.SYSTEM,
+                "email": extra_fields.get("email") or "",
+            },
+        )
+        return user
 
 
 class User(AbstractBaseUser, PermissionsMixin):
@@ -106,9 +116,11 @@ class LecturerStaff(models.Model):
 
 class AdminOfficer(models.Model):
     class Level(models.TextChoices):
-        DEPARTMENT = "department", "Department"
-        FACULTY = "faculty", "Faculty"
+        SYSTEM = "system", "System"
+        UNIVERSITY = "university", "University"
         SCHOOL = "school", "School"
+        FACULTY = "faculty", "Faculty"
+        DEPARTMENT = "department", "Department"
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="admin_profile")
     staff_id = models.CharField(max_length=50, unique=True)

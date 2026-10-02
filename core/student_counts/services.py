@@ -75,7 +75,7 @@ def get_student_count_analytics(queryset, admin_level):
             }
             for row in faculty_breakdown
         ]
-    elif admin_level == "university":
+    elif admin_level in ["university", "system"]:
         school_breakdown = list(queryset.values(
             "program__department__faculty__school_id", "program__department__faculty__school__name",
         ).annotate(student_count=Sum("count")).order_by("program__department__faculty__school__name"))

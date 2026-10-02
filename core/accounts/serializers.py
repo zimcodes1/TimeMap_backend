@@ -40,8 +40,8 @@ def check_email_uniqueness(email, current_user_id=None):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ("id", "identifier", "role", "requires_password_reset", "is_active", "last_login_at", "created_at")
-        read_only_fields = ("id", "last_login_at", "created_at")
+        fields = ("id", "identifier", "role", "is_superuser", "requires_password_reset", "is_active", "last_login_at", "created_at")
+        read_only_fields = ("id", "is_superuser", "last_login_at", "created_at")
 
 
 class StudentProfileSerializer(serializers.ModelSerializer):
@@ -284,8 +284,14 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             scope_name = instance.scope_school.name
             data["scope_school_id"] = instance.scope_school.id
             data["scope_school"] = instance.scope_school.name
+        elif instance.level in ["system", "university"]:
+            scope_id = None
+            scope_name = "System Wide"
+            data["scope_level"] = "system"
+            data["scope_id"] = None
+            data["scope_name"] = "System Administrator"
 
-        data["scope_level"] = instance.level
+        data["scope_level"] = "system" if instance.level in ["system", "university"] else instance.level
         data["scope_id"] = scope_id
         data["scope_name"] = scope_name
         return data
@@ -326,7 +332,7 @@ class AdminProfileSerializer(serializers.ModelSerializer):
                             raise serializers.ValidationError({"level": "Faculty level admins can only create or manage department level admin accounts."})
                         if scope_dept:
                             if not admin_prof.scope_faculty or scope_dept.faculty_id != admin_prof.scope_faculty.id:
-                                raise serializers.ValidationError({"scope_department": "Selected department does not belong to your assigned faculty scope."})
+                                 raise serializers.ValidationError({"scope_department": "Selected department does not belong to your assigned faculty scope."})
 
                     elif admin_prof.level == "school":
                         if target_level != "faculty":
@@ -335,9 +341,9 @@ class AdminProfileSerializer(serializers.ModelSerializer):
                             if not admin_prof.scope_school or scope_fac.school_id != admin_prof.scope_school.id:
                                 raise serializers.ValidationError({"scope_faculty": "Selected faculty does not belong to your assigned school scope."})
 
-                    elif admin_prof.level == "university":
+                    elif admin_prof.level in ["system", "university"]:
                         if target_level != "school":
-                            raise serializers.ValidationError({"level": "University level admins can only create or manage school level admin accounts."})
+                            raise serializers.ValidationError({"level": "System level admins can only create or manage school level admin accounts."})
 
 
         return attrs
@@ -395,8 +401,19 @@ class LoginSerializer(serializers.Serializer):
             profile_data = StudentProfileSerializer(user.student_profile).data
         elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
             profile_data = LecturerProfileSerializer(user.lecturer_profile).data
-        elif user.role == "admin" and hasattr(user, "admin_profile"):
-            profile_data = AdminProfileSerializer(user.admin_profile).data
+        elif user.role in ["admin", "system_admin"] or user.is_superuser:
+            if not hasattr(user, "admin_profile") and user.is_superuser:
+                AdminOfficer.objects.get_or_create(
+                    user=user,
+                    defaults={
+                        "staff_id": user.identifier,
+                        "full_name": f"System Administrator ({user.identifier})",
+                        "level": AdminOfficer.Level.SYSTEM,
+                        "email": "",
+                    },
+                )
+            if hasattr(user, "admin_profile"):
+                profile_data = AdminProfileSerializer(user.admin_profile).data
 
         attrs["user"] = user
         attrs["tokens"] = {

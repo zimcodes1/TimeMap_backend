@@ -27,9 +27,9 @@ class CanManageCourse(BasePermission):
         if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             return True
 
-        if user.role == "admin" and hasattr(user, "admin_profile"):
+        if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
             level = user.admin_profile.level
-            if level == "university":
+            if level in ["university", "system"]:
                 return False  # System level: edit none, delete none
             return level in ["school", "faculty", "department"]
 
@@ -45,11 +45,11 @@ class CanManageCourse(BasePermission):
         if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             return True
 
-        if user.role == "admin" and hasattr(user, "admin_profile"):
+        if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
             level = admin_prof.level
 
-            if level == "university":
+            if level in ["university", "system"]:
                 return False  # Edit none, delete none
 
             if level == "school":
@@ -93,10 +93,10 @@ class CanManageCourseGrant(BasePermission):
         if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             return True
 
-        if user.role == "admin" and hasattr(user, "admin_profile"):
+        if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
             level = user.admin_profile.level
-            if level in ["university", "school"]:
-                return False  # No access grants for school/university level
+            if level in ["system", "university", "school"]:
+                return False  # No access grants for school/university/system level
             return level in ["faculty", "department"]
 
         return False

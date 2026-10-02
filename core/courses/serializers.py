@@ -118,10 +118,10 @@ class CourseSerializer(serializers.ModelSerializer):
             attrs["target_program"] = None
 
         # Creation-time ownership guardrails based on requesting admin's level
-        if user.role == "admin" and hasattr(user, "admin_profile"):
+        if (user.role in ["admin", "system_admin"] or user.is_superuser) and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
-            if admin_prof.level == "university":
-                raise serializers.ValidationError("University level admins have view-only access and cannot create or edit courses.")
+            if admin_prof.level in ["system", "university"]:
+                raise serializers.ValidationError("System level admins have view-only access and cannot create or edit courses.")
 
             elif admin_prof.level == "school":
                 if owning_level != Course.OwningLevel.SCHOOL:
