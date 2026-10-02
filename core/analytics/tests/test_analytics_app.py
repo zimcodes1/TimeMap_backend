@@ -140,3 +140,14 @@ class RoleBasedAnalyticsTests(APITestCase):
         self.assertEqual(res_c.data["query_range"]["filtered_course"], "CSC303")
         self.assertEqual(res_c.data["summary"]["total_sessions"], 1)
         self.assertEqual(res_c.data["summary"]["not_held_count"], 1)
+
+    def test_regular_student_analytics_allowed(self):
+        self.client.force_authenticate(user=self.regular_user)
+        url = "/api/analytics/student/"
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["summary"]["total_sessions"], 2)
+        self.assertEqual(res.data["summary"]["held_count"], 1)
+        self.assertEqual(res.data["summary"]["not_held_count"], 1)
+        self.assertTrue(AnalyticsQueryLog.objects.filter(user=self.regular_user, query_type="student").exists())
+

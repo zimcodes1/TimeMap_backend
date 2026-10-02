@@ -1,5 +1,5 @@
 from django.contrib.auth import authenticate
-from hierarchy.models import Department, Faculty, School
+from hierarchy.models import Department, Faculty, Program, School
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -432,3 +432,79 @@ class PasswordResetSerializer(serializers.Serializer):
         if len(value) < 6:
             raise serializers.ValidationError("Password must be at least 6 characters long.")
         return value
+
+
+class StudentRegistrationSerializer(serializers.Serializer):
+    matric_number = serializers.CharField(max_length=50, required=True)
+    full_name = serializers.CharField(max_length=255, required=True)
+    email = serializers.EmailField(required=True)
+    faculty = serializers.PrimaryKeyRelatedField(
+        queryset=Faculty.objects.all(), required=False, allow_null=True
+    )
+    department = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.all(), required=True
+    )
+    program = serializers.PrimaryKeyRelatedField(
+        queryset=Program.objects.all(), required=True
+    )
+    level = serializers.IntegerField(required=True)
+    password = serializers.CharField(min_length=6, write_only=True, required=True)
+
+    def validate_matric_number(self, value):
+        cleaned = value.strip().upper()
+        if User.objects.filter(identifier=cleaned).exists() or Student.objects.filter(matric_number=cleaned).exists():
+            raise serializers.ValidationError(f"Matric number or identifier '{cleaned}' is already registered.")
+        return cleaned
+
+    def validate_full_name(self, value):
+        cleaned = value.strip()
+        if len(cleaned) < 2:
+            raise serializers.ValidationError("Full name must be at least 2 characters long.")
+        return cleaned
+
+    def validate_email(self, value):
+        check_email_uniqueness(value)
+        return value.strip().lower()
+
+    def validate(self, attrs):
+        faculty = attrs.get("faculty")
+        department = attrs.get("department")
+        program = attrs.get("program")
+        level = attrs.get("level")
+
+        if faculty and department.faculty_id != faculty.id:
+            raise serializers.ValidationError({"department": "The selected department does not belong to the selected faculty."})
+
+        if program.department_id != department.id:
+            raise serializers.ValidationError({"program": "The selected program does not belong to the selected department."})
+
+        max_lvl = program.max_level
+        if level < 100 or level > max_lvl or level % 100 != 0:
+            raise serializers.ValidationError({
+                "level": f"Level must be a valid academic level (e.g. 100, 200, ...) up to {max_lvl}L for {program.name}."
+            })
+
+        return attrs
+
+    def create(self, validated_data):
+        from django.db import transaction
+
+        validated_data.pop("faculty", None)
+        password = validated_data.pop("password")
+        matric_number = validated_data["matric_number"]
+
+        with transaction.atomic():
+            user = User.objects.create_user(
+                identifier=matric_number,
+                password=password,
+                role=User.Role.STUDENT,
+                requires_password_reset=False,
+                is_active=True,
+            )
+            student = Student.objects.create(
+                user=user,
+                is_class_rep=False,
+                **validated_data
+            )
+        return student
+
