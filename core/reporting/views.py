@@ -32,7 +32,16 @@ class ClassRepReportViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = ClassRepReport.objects.all()
+        qs = ClassRepReport.objects.select_related(
+            "reported_by",
+            "lecture_session",
+            "lecture_session__venue",
+            "lecture_session__timetable_entry",
+            "lecture_session__timetable_entry__venue",
+            "lecture_session__timetable_entry__course",
+        ).prefetch_related(
+            "lecture_session__timetable_entry__course__lecturers",
+        )
 
         if user.role == "student" and hasattr(user, "student_profile"):
             if not user.student_profile.is_class_rep:
