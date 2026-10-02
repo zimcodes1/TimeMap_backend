@@ -39,7 +39,7 @@ class ProgramStudentCountViewSet(viewsets.ModelViewSet):
         if program_id:
             queryset = queryset.filter(program_id=program_id)
 
-        if admin_level == "university":
+        if admin_level in ["university", "system"]:
             school_id = request.query_params.get("school_id")
             if school_id:
                 queryset = queryset.filter(program__department__faculty__school_id=school_id)

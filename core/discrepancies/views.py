@@ -164,12 +164,15 @@ class AuditLogViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets
 
     def get_queryset(self):
         user = self.request.user
-        if user.role != "admin" or not hasattr(user, "admin_profile"):
+        is_system_admin = (
+            user.is_superuser
+            or (
+                user.role in ["admin", "system_admin"]
+                and hasattr(user, "admin_profile")
+                and user.admin_profile.level in ["system", "university"]
+            )
+        )
+        if not is_system_admin:
             return AuditLog.objects.filter(actor=user).order_by("-timestamp")
 
-        # Admin scope filtering
-        dept_qs = get_user_scope_departments(user)
-        dept_ids = list(dept_qs.values_list("id", flat=True))
-
-        # Return audit logs created by actor in scope or targeting objects in scope
         return AuditLog.objects.order_by("-timestamp")

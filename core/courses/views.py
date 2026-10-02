@@ -40,11 +40,11 @@ class CourseViewSet(viewsets.ModelViewSet):
         elif user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             base_qs = Course.objects.all()
 
-        elif user.role == "admin" and hasattr(user, "admin_profile"):
+        elif (user.role in ["admin", "system_admin"] or user.is_superuser) and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
             level = admin_prof.level
 
-            if level in ["university", "school"]:
+            if level in ["system", "university", "school"]:
                 # System level & School level can view all courses
                 base_qs = Course.objects.all()
 
