@@ -160,8 +160,26 @@ class GenerationAPITests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
         self.assertIn("disabled", res.data["error"].lower())
 
-        # 2. System Admin enables faculty generation for the school
-        self.client.force_authenticate(user=self.superuser)
+        # 2. Faculty Admin cannot configure generation permissions -> 403 Forbidden
+        self.client.force_authenticate(user=self.fac_user)
+        perm_denied = self.client.patch(
+            "/api/scheduling/generate/permissions/",
+            {"school": self.school.id, "allow_faculty_generation": True},
+            format="json",
+        )
+        self.assertEqual(perm_denied.status_code, status.HTTP_403_FORBIDDEN)
+
+        # 3. School Admin cannot configure permissions for a different school -> 403 Forbidden
+        other_school = School.objects.create(name="School of Business", code="SOB")
+        self.client.force_authenticate(user=self.school_user)
+        perm_other_school = self.client.patch(
+            "/api/scheduling/generate/permissions/",
+            {"school": other_school.id, "allow_faculty_generation": True},
+            format="json",
+        )
+        self.assertEqual(perm_other_school.status_code, status.HTTP_403_FORBIDDEN)
+
+        # 4. School Admin enables faculty generation for their own school -> 200 OK
         perm_res = self.client.patch(
             "/api/scheduling/generate/permissions/",
             {"school": self.school.id, "allow_faculty_generation": True},
@@ -170,7 +188,7 @@ class GenerationAPITests(APITestCase):
         self.assertEqual(perm_res.status_code, status.HTTP_200_OK)
         self.assertTrue(perm_res.data["allow_faculty_generation"])
 
-        # 3. Now faculty admin can generate for their faculty!
+        # 5. Now faculty admin can generate for their faculty!
         self.client.force_authenticate(user=self.fac_user)
         res_allowed = self.client.post("/api/scheduling/generate/", payload, format="json")
         self.assertEqual(res_allowed.status_code, status.HTTP_200_OK)

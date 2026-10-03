@@ -45,10 +45,10 @@ class CanGenerateTimetable(BasePermission):
 
 class CanManageGenerationPermissions(BasePermission):
     """
-    Only Superusers (system-level admins) can configure decentralized generation permissions.
+    School administrators (and superusers/system admins) can configure decentralized generation permissions.
     """
 
-    message = "Only system-level administrators can configure timetable generation permissions."
+    message = "Only school administrators can configure timetable generation permissions."
 
     def has_permission(self, request, view):
         user = request.user
@@ -56,7 +56,14 @@ class CanManageGenerationPermissions(BasePermission):
             return False
         if request.method in permissions.SAFE_METHODS:
             return user.role == "admin"
-        return bool(user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")))
+        admin_prof = getattr(user, "admin_profile", None)
+        is_school_admin = user.role == "admin" and admin_prof and admin_prof.level == "school"
+        is_system_admin = (
+            user.is_superuser
+            or (admin_prof and admin_prof.level in ["system", "university"])
+            or (user.is_staff and not admin_prof)
+        )
+        return bool(is_school_admin or is_system_admin)
 
 
 def check_scope_generation_permission(user, semester, scope_type: str, scope_id: int):
@@ -107,7 +114,7 @@ def check_scope_generation_permission(user, semester, scope_type: str, scope_id:
         school = user_faculty.school
         perm = GenerationScopePermission.objects.filter(school=school).first()
         if not perm or not perm.allow_faculty_generation:
-            return False, "Faculty-level timetable generation is disabled by the system administrator."
+            return False, "Faculty-level timetable generation is disabled by the school administrator."
 
         if scope_type == "faculty":
             if int(scope_id) != user_faculty.id:
@@ -130,7 +137,7 @@ def check_scope_generation_permission(user, semester, scope_type: str, scope_id:
 
         perm = GenerationScopePermission.objects.filter(school=school).first()
         if not perm or not perm.allow_department_generation:
-            return False, "Department-level timetable generation is disabled by the system administrator."
+            return False, "Department-level timetable generation is disabled by the school administrator."
 
         if scope_type != "department" or int(scope_id) != user_dept.id:
             return False, "Department administrators can only generate timetables for their own department."

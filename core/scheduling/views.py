@@ -36,7 +36,6 @@ from .optimizer.preprocessing.pipeline import build_scheduling_problem_from_db
 from .optimizer.publisher import publish_generation_run
 from .permissions import (
     CanGenerateTimetable,
-    CanManageGenerationPermissions,
     CanManageSessionAndSemester,
     check_scope_generation_permission,
 )
@@ -761,15 +760,33 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["get", "patch"], url_path="permissions")
     def permissions_endpoint(self, request):
         if request.method.lower() == "patch":
-            if not (request.user.is_superuser or (request.user.is_staff and not hasattr(request.user, "admin_profile"))):
+            admin_prof = getattr(request.user, "admin_profile", None)
+            is_school_admin = request.user.role == "admin" and admin_prof and admin_prof.level == "school"
+            is_system_admin = (
+                request.user.is_superuser
+                or (admin_prof and admin_prof.level in ["system", "university"])
+                or (request.user.is_staff and not admin_prof)
+            )
+
+            if not (is_school_admin or is_system_admin):
                 return Response(
-                    {"error": "Only system-level administrators can configure timetable generation permissions."},
+                    {"error": "Only school administrators can configure timetable generation permissions."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
             school_id = request.data.get("school")
             if not school_id:
-                return Response({"error": "School ID required."}, status=status.HTTP_400_BAD_REQUEST)
+                if is_school_admin and admin_prof.scope_school_id:
+                    school_id = admin_prof.scope_school_id
+                else:
+                    return Response({"error": "School ID required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if is_school_admin and admin_prof.scope_school_id:
+                if int(school_id) != admin_prof.scope_school_id:
+                    return Response(
+                        {"error": "School administrators can only configure timetable generation permissions for their assigned school."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
 
             perm, _ = GenerationScopePermission.objects.get_or_create(school_id=school_id)
             serializer = GenerationScopePermissionSerializer(perm, data=request.data, partial=True)

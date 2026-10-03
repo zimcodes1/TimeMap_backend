@@ -765,7 +765,6 @@ def get_dashboard_statcards(user):
                 "unit": "Venues",
                 "badge": "All Schools",
                 "badge_variant": "success",
-                "description": "Entire system: all schools combined",
             },
             {
                 "id": "total_schools",
@@ -774,7 +773,6 @@ def get_dashboard_statcards(user):
                 "unit": "Schools",
                 "badge": "Institutional",
                 "badge_variant": "neutral",
-                "description": "Total academic schools in system",
             },
             {
                 "id": "hard_conflicts",
@@ -783,7 +781,6 @@ def get_dashboard_statcards(user):
                 "unit": "Conflicts",
                 "badge": "Zero Conflict" if hard_conflicts == 0 else "Action Required",
                 "badge_variant": "success" if hard_conflicts == 0 else "danger",
-                "description": "Cross-venue and instructor collisions",
             },
             {
                 "id": "quality_score",
@@ -792,7 +789,6 @@ def get_dashboard_statcards(user):
                 "unit": "Quality",
                 "badge": "Optimal" if system_quality_val >= 90 else ("Good" if system_quality_val >= 75 else "Needs Review"),
                 "badge_variant": "success" if system_quality_val >= 90 else ("warning" if system_quality_val >= 75 else "danger"),
-                "description": "Weighted conflict & constraint optimization",
             },
         ]
 
@@ -823,7 +819,6 @@ def get_dashboard_statcards(user):
                 "unit": "Venues",
                 "badge": getattr(school, "code", "School Scope"),
                 "badge_variant": "success",
-                "description": "Venues in this school",
             },
             {
                 "id": "total_faculties",
@@ -832,7 +827,6 @@ def get_dashboard_statcards(user):
                 "unit": "Faculties",
                 "badge": "Constituent",
                 "badge_variant": "neutral",
-                "description": "Faculties under this school",
             },
             {
                 "id": "hold_rate",
@@ -841,7 +835,6 @@ def get_dashboard_statcards(user):
                 "unit": "Hold Rate",
                 "badge": "Optimal" if hold_rate_pct >= 75 else ("Fair" if hold_rate_pct >= 50 else "Critical"),
                 "badge_variant": "success" if hold_rate_pct >= 75 else ("warning" if hold_rate_pct >= 50 else "danger"),
-                "description": "Total lecture hold-rate for semester (entire school)",
             },
         ]
 
@@ -872,7 +865,6 @@ def get_dashboard_statcards(user):
                 "unit": "Venues",
                 "badge": getattr(faculty, "code", "Faculty Scope"),
                 "badge_variant": "success",
-                "description": "Venues in this faculty",
             },
             {
                 "id": "total_departments",
@@ -881,7 +873,6 @@ def get_dashboard_statcards(user):
                 "unit": "Departments",
                 "badge": "Academic Units",
                 "badge_variant": "neutral",
-                "description": "Departments under this faculty",
             },
             {
                 "id": "hold_rate",
@@ -890,7 +881,6 @@ def get_dashboard_statcards(user):
                 "unit": "Hold Rate",
                 "badge": "Optimal" if hold_rate_pct >= 75 else ("Fair" if hold_rate_pct >= 50 else "Critical"),
                 "badge_variant": "success" if hold_rate_pct >= 75 else ("warning" if hold_rate_pct >= 50 else "danger"),
-                "description": "Total lecture hold-rate for semester (entire faculty)",
             },
         ]
 
@@ -941,7 +931,6 @@ def get_dashboard_statcards(user):
                 "unit": "Venues",
                 "badge": getattr(dept, "code", "Dept Scope"),
                 "badge_variant": "success",
-                "description": "Active venues in department",
             },
             {
                 "id": "total_courses",
@@ -950,7 +939,6 @@ def get_dashboard_statcards(user):
                 "unit": "Courses",
                 "badge": "Semester Scope",
                 "badge_variant": "neutral",
-                "description": "Department course offerings",
             },
             {
                 "id": "discrepancy_queue",
@@ -959,7 +947,6 @@ def get_dashboard_statcards(user):
                 "unit": "Pending",
                 "badge": "Requires Action" if discrepancy_queue > 0 else "Queue Clear",
                 "badge_variant": "warning" if discrepancy_queue > 0 else "success",
-                "description": "Pending requests requiring resolution",
             },
             {
                 "id": "unreported_sessions",
@@ -968,7 +955,6 @@ def get_dashboard_statcards(user):
                 "unit": "Sessions",
                 "badge": "Audit Required" if unreported_this_week > 0 else "Up to Date",
                 "badge_variant": "danger" if unreported_this_week > 0 else "success",
-                "description": "Sessions this week awaiting rep report",
             },
         ]
 
