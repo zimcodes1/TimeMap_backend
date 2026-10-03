@@ -168,7 +168,7 @@ class ExamSitting(models.Model):
 class GenerationScopePermission(models.Model):
     """
     Controls decentralized timetable generation rights within a School.
-    System administrators (superusers) configure whether Faculty or Department
+    School administrators configure whether Faculty or Department
     admins are permitted to run scoped GA timetable generation.
     """
 
