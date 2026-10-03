@@ -8,13 +8,14 @@ from .conflict_engine import check_student_exam_clash, determine_booking_routing
 from .models import (
     AcademicSession,
     ExamSitting,
+    FacultyExamPeriod,
     GenerationScopePermission,
     LectureSession,
     Semester,
     TimetableEntry,
     TimetableGenerationRun,
 )
-from .services import materialize_timetable_entry
+from .services import get_effective_exam_period, materialize_timetable_entry
 
 
 class SemesterSerializer(serializers.ModelSerializer):
@@ -56,6 +57,50 @@ class SemesterSerializer(serializers.ModelSerializer):
                 if hasattr(user, "admin_profile") and user.admin_profile.level == "school":
                     if session and user.admin_profile.scope_school_id and session.school_id != user.admin_profile.scope_school_id:
                         raise serializers.ValidationError({"session": "School admins can only manage semesters within their assigned school."})
+
+        # Mandatory lecture start and end dates
+        lecture_start = attrs.get("lecture_start_date", self.instance.lecture_start_date if self.instance else None)
+        lecture_end = attrs.get("lecture_end_date", self.instance.lecture_end_date if self.instance else None)
+        start_date = attrs.get("start_date", self.instance.start_date if self.instance else None)
+        end_date = attrs.get("end_date", self.instance.end_date if self.instance else None)
+
+        if not lecture_start or not lecture_end:
+            raise serializers.ValidationError({
+                "lecture_start_date": "Lecture start and end dates are required to define the teaching calendar.",
+                "lecture_end_date": "Lecture start and end dates are required to define the teaching calendar.",
+            })
+
+        if lecture_start >= lecture_end:
+            raise serializers.ValidationError({
+                "lecture_end_date": "Lecture end date must be after lecture start date."
+            })
+
+        if start_date and lecture_start < start_date:
+            raise serializers.ValidationError({
+                "lecture_start_date": "Lecture start date cannot be before semester start date."
+            })
+
+        if end_date and lecture_end > end_date:
+            raise serializers.ValidationError({
+                "lecture_end_date": "Lecture end date cannot be after semester end date."
+            })
+
+        exam_start = attrs.get("exam_start_date", self.instance.exam_start_date if self.instance else None)
+        exam_end = attrs.get("exam_end_date", self.instance.exam_end_date if self.instance else None)
+        if exam_start and exam_end:
+            if exam_start >= exam_end:
+                raise serializers.ValidationError({
+                    "exam_end_date": "Exam end date must be after exam start date."
+                })
+            if start_date and exam_start < start_date:
+                raise serializers.ValidationError({
+                    "exam_start_date": "Exam start date cannot be before semester start date."
+                })
+            if end_date and exam_end > end_date:
+                raise serializers.ValidationError({
+                    "exam_end_date": "Exam end date cannot be after semester end date."
+                })
+
         return attrs
 
 
@@ -279,6 +324,48 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             recurrence_start_date = attrs.get("recurrence_start_date", self.instance.recurrence_start_date if self.instance else None)
             recurrence_end_date = attrs.get("recurrence_end_date", self.instance.recurrence_end_date if self.instance else None)
 
+            if entry_type == "lecture" and recurrence_rule:
+                if semester:
+                    l_start = semester.lecture_start_date or semester.start_date
+                    l_end = semester.lecture_end_date or semester.end_date
+                    if not recurrence_start_date or recurrence_start_date < l_start:
+                        attrs["recurrence_start_date"] = l_start
+                        recurrence_start_date = l_start
+                    if not recurrence_end_date or recurrence_end_date > l_end:
+                        attrs["recurrence_end_date"] = l_end
+                        recurrence_end_date = l_end
+
+            elif entry_type == "exam":
+                if not semester:
+                    raise serializers.ValidationError({"semester": "An active semester is required for exam scheduling."})
+                faculty = None
+                department = None
+                if course:
+                    faculty = course.owning_faculty
+                    department = course.owning_department
+                    if not faculty and department:
+                        faculty = department.faculty
+
+                exam_start, exam_end, source, _ = get_effective_exam_period(semester, faculty=faculty, department=department)
+                if not exam_start or not exam_end:
+                    raise serializers.ValidationError({
+                        "detail": "Examination timetable cannot be scheduled because the examination period has not been defined by the administrator."
+                    })
+
+                exam_date = recurrence_start_date or attrs.get("start_date")
+                if not exam_date:
+                    attrs["recurrence_start_date"] = exam_start
+                    exam_date = exam_start
+                    recurrence_start_date = exam_start
+                else:
+                    if exam_date < exam_start or exam_date > exam_end:
+                        raise serializers.ValidationError({
+                            "recurrence_start_date": f"Exam date ({exam_date}) must fall within the defined examination period ({exam_start} to {exam_end})."
+                        })
+                if not recurrence_end_date:
+                    attrs["recurrence_end_date"] = exam_date
+                    recurrence_end_date = exam_date
+
             date_or_start = recurrence_start_date
 
             if venue and start_time and end_time and date_or_start:
@@ -336,6 +423,24 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
         # Trigger materialization automatically if it's a recurring lecture
         if entry.entry_type == TimetableEntry.EntryType.LECTURE and entry.recurrence_rule:
             materialize_timetable_entry(entry)
+
+        # Automatically materialize exam session and sitting if it's an exam entry
+        elif entry.entry_type == TimetableEntry.EntryType.EXAM and entry.recurrence_start_date:
+            session_date = entry.recurrence_start_date
+            LectureSession.objects.get_or_create(
+                timetable_entry=entry,
+                session_date=session_date,
+                defaults={
+                    "session_start_time": entry.start_time,
+                    "session_end_time": entry.end_time,
+                    "venue": entry.venue,
+                    "status": LectureSession.Status.SCHEDULED,
+                },
+            )
+            ExamSitting.objects.get_or_create(
+                timetable_entry=entry,
+                defaults={"registered_candidates_count": 0},
+            )
 
         return entry
 
@@ -609,9 +714,65 @@ class GenerationScopePermissionSerializer(serializers.ModelSerializer):
             "school_code",
             "allow_faculty_generation",
             "allow_department_generation",
+            "allow_faculty_exam_period",
             "updated_at",
         )
         read_only_fields = ("id", "updated_at")
+
+
+class FacultyExamPeriodSerializer(serializers.ModelSerializer):
+    faculty_name = serializers.ReadOnlyField(source="faculty.name")
+    faculty_code = serializers.ReadOnlyField(source="faculty.code")
+    semester_name = serializers.ReadOnlyField(source="semester.get_name_display")
+
+    class Meta:
+        model = FacultyExamPeriod
+        fields = (
+            "id",
+            "semester",
+            "semester_name",
+            "faculty",
+            "faculty_name",
+            "faculty_code",
+            "start_date",
+            "end_date",
+            "created_by",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_by", "created_at", "updated_at")
+
+    def validate(self, attrs):
+        semester = attrs.get("semester", self.instance.semester if self.instance else None)
+        faculty = attrs.get("faculty", self.instance.faculty if self.instance else None)
+        start_date = attrs.get("start_date", self.instance.start_date if self.instance else None)
+        end_date = attrs.get("end_date", self.instance.end_date if self.instance else None)
+
+        if not semester:
+            raise serializers.ValidationError({"semester": "Semester is required."})
+        if not faculty:
+            raise serializers.ValidationError({"faculty": "Faculty is required."})
+
+        school = semester.session.school if semester.session else None
+        if not school or faculty.school_id != school.id:
+            raise serializers.ValidationError({"faculty": "Faculty does not belong to the semester's school."})
+
+        perm = GenerationScopePermission.objects.filter(school=school).first()
+        if not perm or not perm.allow_faculty_exam_period:
+            raise serializers.ValidationError({
+                "detail": "Faculty-level exam periods are disabled by the school administrator."
+            })
+
+        if start_date and end_date and start_date >= end_date:
+            raise serializers.ValidationError({"end_date": "Exam period end date must be after start date."})
+
+        if semester.start_date and start_date and start_date < semester.start_date:
+            raise serializers.ValidationError({"start_date": "Exam period cannot start before semester start date."})
+
+        if semester.end_date and end_date and end_date > semester.end_date:
+            raise serializers.ValidationError({"end_date": "Exam period cannot end after semester end date."})
+
+        return attrs
 
 
 class TimetableGenerationRunSerializer(serializers.ModelSerializer):

@@ -3,7 +3,7 @@ from accounts.models import AdminOfficer, LecturerStaff, User
 from courses.models import Course
 from django.core.exceptions import ValidationError
 from django.db import models
-from hierarchy.models import School
+from hierarchy.models import Faculty, School
 from venues.models import Venue
 
 
@@ -90,10 +90,22 @@ class Semester(models.Model):
         super().clean()
         if self.start_date and self.end_date and self.start_date >= self.end_date:
             raise ValidationError("Semester start date must be before end date.")
-        if self.lecture_start_date and self.lecture_end_date and self.lecture_start_date >= self.lecture_end_date:
-            raise ValidationError("Lecture period start must be before end.")
-        if self.exam_start_date and self.exam_end_date and self.exam_start_date >= self.exam_end_date:
-            raise ValidationError("Exam period start must be before end.")
+        if not self.lecture_start_date or not self.lecture_end_date:
+            raise ValidationError("Lecture start and end dates are required.")
+        if self.lecture_start_date and self.lecture_end_date:
+            if self.lecture_start_date >= self.lecture_end_date:
+                raise ValidationError("Lecture period start must be before end.")
+            if self.start_date and self.lecture_start_date < self.start_date:
+                raise ValidationError("Lecture period start cannot be before semester start date.")
+            if self.end_date and self.lecture_end_date > self.end_date:
+                raise ValidationError("Lecture period end cannot be after semester end date.")
+        if self.exam_start_date and self.exam_end_date:
+            if self.exam_start_date >= self.exam_end_date:
+                raise ValidationError("Exam period start must be before end.")
+            if self.start_date and self.exam_start_date < self.start_date:
+                raise ValidationError("Exam period start cannot be before semester start date.")
+            if self.end_date and self.exam_end_date > self.end_date:
+                raise ValidationError("Exam period end cannot be after semester end date.")
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -167,9 +179,9 @@ class ExamSitting(models.Model):
 
 class GenerationScopePermission(models.Model):
     """
-    Controls decentralized timetable generation rights within a School.
+    Controls decentralized timetable generation and exam scheduling rights within a School.
     School administrators configure whether Faculty or Department
-    admins are permitted to run scoped GA timetable generation.
+    admins are permitted to run scoped GA timetable generation or define faculty exam periods.
     """
 
     school = models.OneToOneField(
@@ -177,10 +189,56 @@ class GenerationScopePermission(models.Model):
     )
     allow_faculty_generation = models.BooleanField(default=False)
     allow_department_generation = models.BooleanField(default=False)
+    allow_faculty_exam_period = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"GenerationPermission({self.school.code}: fac={self.allow_faculty_generation}, dept={self.allow_department_generation})"
+        return f"GenerationPermission({self.school.code}: fac={self.allow_faculty_generation}, dept={self.allow_department_generation}, exam_period={self.allow_faculty_exam_period})"
+
+
+class FacultyExamPeriod(models.Model):
+    """
+    Defines a faculty-specific examination period within a semester.
+    Allowed only when the School Admin enables 'allow_faculty_exam_period' in GenerationScopePermission.
+    """
+
+    semester = models.ForeignKey(
+        Semester, on_delete=models.CASCADE, related_name="faculty_exam_periods"
+    )
+    faculty = models.ForeignKey(
+        Faculty, on_delete=models.CASCADE, related_name="exam_periods"
+    )
+    start_date = models.DateField()
+    end_date = models.DateField()
+    created_by = models.ForeignKey(
+        AdminOfficer,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_faculty_exam_periods",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("semester", "faculty")
+        ordering = ["semester", "faculty"]
+
+    def clean(self):
+        super().clean()
+        if self.start_date and self.end_date and self.start_date >= self.end_date:
+            raise ValidationError("Faculty exam period start date must be before end date.")
+        if self.semester and self.semester.start_date and self.start_date < self.semester.start_date:
+            raise ValidationError("Faculty exam period start date cannot be before semester start date.")
+        if self.semester and self.semester.end_date and self.end_date > self.semester.end_date:
+            raise ValidationError("Faculty exam period end date cannot be after semester end date.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"ExamPeriod({self.faculty.code} - {self.semester}: {self.start_date} to {self.end_date})"
 
 
 class TimetableGenerationRun(models.Model):

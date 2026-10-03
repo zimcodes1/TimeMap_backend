@@ -98,6 +98,8 @@ class AcademicSessionAndSemesterTests(APITestCase):
                 "start_date": "2027-03-01",
                 "end_date": "2027-07-15",
                 "duration_type": "fixed",
+                "lecture_start_date": "2027-03-05",
+                "lecture_end_date": "2027-06-30",
                 "is_active": False,
             },
             format="json",

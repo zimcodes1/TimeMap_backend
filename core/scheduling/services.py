@@ -73,3 +73,37 @@ def materialize_timetable_entry(entry):
         current_date += datetime.timedelta(days=1)
 
     return created_sessions
+
+
+def get_effective_exam_period(semester, faculty=None, department=None):
+    """
+    Resolves the effective (start_date, end_date, source, period_obj) for the exam period.
+    - If faculty is given (or resolved from department):
+      Check if GenerationScopePermission allows faculty exam period for the school.
+      If allowed, check if a FacultyExamPeriod exists for (semester, faculty).
+      If found, return (fep.start_date, fep.end_date, "faculty", fep).
+    - Otherwise, fallback to semester.exam_start_date, semester.exam_end_date, "school", None if set.
+    - If neither is set, return (None, None, "none", None).
+    """
+    if not semester:
+        return None, None, "none", None
+
+    school = semester.session.school if semester.session else None
+
+    # Resolve target faculty
+    target_faculty = faculty
+    if not target_faculty and department:
+        target_faculty = department.faculty
+
+    if target_faculty and school:
+        from .models import GenerationScopePermission, FacultyExamPeriod
+        perm = GenerationScopePermission.objects.filter(school=school).first()
+        if perm and perm.allow_faculty_exam_period:
+            fep = FacultyExamPeriod.objects.filter(semester=semester, faculty=target_faculty).first()
+            if fep and fep.start_date and fep.end_date:
+                return fep.start_date, fep.end_date, "faculty", fep
+
+    if semester.exam_start_date and semester.exam_end_date:
+        return semester.exam_start_date, semester.exam_end_date, "school", None
+
+    return None, None, "none", None
