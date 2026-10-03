@@ -20,6 +20,7 @@ import datetime
 from .models import (
     AcademicSession,
     ExamSitting,
+    FacultyExamPeriod,
     GenerationScopePermission,
     LectureSession,
     Semester,
@@ -42,6 +43,7 @@ from .permissions import (
 from .serializers import (
     AcademicSessionSerializer,
     ExamSittingSerializer,
+    FacultyExamPeriodSerializer,
     GenerateTimetableRequestSerializer,
     GenerationScopePermissionSerializer,
     LectureSessionSerializer,
@@ -50,7 +52,7 @@ from .serializers import (
     TimetableGenerationRunDetailSerializer,
     TimetableGenerationRunSerializer,
 )
-from .services import materialize_timetable_entry
+from .services import get_effective_exam_period, materialize_timetable_entry
 
 
 class AcademicSessionViewSet(viewsets.ModelViewSet):
@@ -101,6 +103,11 @@ class SemesterViewSet(viewsets.ModelViewSet):
         admin_prof = getattr(self.request.user, "admin_profile", None)
         serializer.save(created_by=admin_prof)
 
+    def get_permissions(self):
+        if self.action in ["faculty_exam_periods", "effective_exam_period"]:
+            return [IsAuthenticated(), IsPasswordResetDone()]
+        return super().get_permissions()
+
     @extend_schema(summary="Activate this semester for the school", responses={200: SemesterSerializer})
     @action(detail=True, methods=["post"], url_path="activate")
     def activate(self, request, pk=None):
@@ -111,6 +118,159 @@ class SemesterViewSet(viewsets.ModelViewSet):
         semester.is_active = True
         semester.save(update_fields=["is_active"])
         return Response(SemesterSerializer(semester).data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Set or update school-wide exam period for a semester", responses={200: SemesterSerializer})
+    @action(detail=True, methods=["post"], url_path="set-exam-period")
+    def set_exam_period(self, request, pk=None):
+        semester = self.get_object()
+        user = request.user
+        admin_prof = getattr(user, "admin_profile", None)
+        is_school_admin = user.role == "admin" and admin_prof and admin_prof.level == "school"
+        is_system_admin = user.is_superuser or (admin_prof and admin_prof.level in ["system", "university"]) or (user.is_staff and not admin_prof)
+
+        if not (is_school_admin or is_system_admin):
+            return Response(
+                {"error": "Only school administrators can define the school-wide examination period."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if is_school_admin and admin_prof.scope_school_id and semester.session.school_id != admin_prof.scope_school_id:
+            return Response(
+                {"error": "School administrators can only set examination periods for their assigned school."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        exam_start_date = request.data.get("exam_start_date")
+        exam_end_date = request.data.get("exam_end_date")
+
+        if not exam_start_date or not exam_end_date:
+            return Response(
+                {"error": "Both exam_start_date and exam_end_date are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if str(exam_start_date) >= str(exam_end_date):
+            return Response(
+                {"error": "Exam start date must be before end date."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if semester.start_date and str(exam_start_date) < str(semester.start_date):
+            return Response(
+                {"error": "Exam period cannot start before semester start date."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if semester.end_date and str(exam_end_date) > str(semester.end_date):
+            return Response(
+                {"error": "Exam period cannot end after semester end date."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        semester.exam_start_date = exam_start_date
+        semester.exam_end_date = exam_end_date
+        semester.save(update_fields=["exam_start_date", "exam_end_date"])
+        return Response(SemesterSerializer(semester).data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Manage faculty-specific exam periods for a semester")
+    @action(detail=True, methods=["get", "post", "delete"], url_path="faculty-exam-periods")
+    def faculty_exam_periods(self, request, pk=None):
+        semester = self.get_object()
+        school = semester.session.school
+
+        if request.method.lower() == "get":
+            faculty_id = request.query_params.get("faculty")
+            qs = FacultyExamPeriod.objects.filter(semester=semester)
+            if faculty_id:
+                qs = qs.filter(faculty_id=faculty_id)
+            return Response(FacultyExamPeriodSerializer(qs, many=True).data)
+
+        user = request.user
+        admin_prof = getattr(user, "admin_profile", None)
+        is_faculty_admin = user.role == "admin" and admin_prof and admin_prof.level == "faculty"
+        is_school_admin = user.role == "admin" and admin_prof and admin_prof.level == "school"
+        is_system_admin = user.is_superuser or (admin_prof and admin_prof.level in ["system", "university"]) or (user.is_staff and not admin_prof)
+
+        perm = GenerationScopePermission.objects.filter(school=school).first()
+        allow_faculty_exam = bool(perm and perm.allow_faculty_exam_period)
+
+        if not (is_faculty_admin or is_school_admin or is_system_admin):
+            return Response(
+                {"error": "Only faculty or school administrators can manage faculty examination periods."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if is_faculty_admin and not allow_faculty_exam:
+            return Response(
+                {"error": "Faculty-specific examination periods are not permitted by the school administrator."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if request.method.lower() == "delete":
+            faculty_id = request.data.get("faculty") or request.query_params.get("faculty")
+            if is_faculty_admin and admin_prof.scope_faculty_id:
+                faculty_id = admin_prof.scope_faculty_id
+            if not faculty_id:
+                return Response({"error": "Faculty ID required."}, status=status.HTTP_400_BAD_REQUEST)
+            FacultyExamPeriod.objects.filter(semester=semester, faculty_id=faculty_id).delete()
+            return Response({"status": "deleted"}, status=status.HTTP_200_OK)
+
+        # POST: Create or Update
+        faculty_id = request.data.get("faculty")
+        if is_faculty_admin and admin_prof.scope_faculty_id:
+            faculty_id = admin_prof.scope_faculty_id
+        if not faculty_id:
+            return Response({"error": "Faculty ID required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        start_date = request.data.get("start_date")
+        end_date = request.data.get("end_date")
+
+        fep, _ = FacultyExamPeriod.objects.get_or_create(
+            semester=semester,
+            faculty_id=faculty_id,
+            defaults={"start_date": start_date, "end_date": end_date, "created_by": admin_prof},
+        )
+        serializer = FacultyExamPeriodSerializer(
+            fep,
+            data={"semester": semester.id, "faculty": faculty_id, "start_date": start_date, "end_date": end_date},
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(created_by=admin_prof)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Get effective examination period for a given faculty or department")
+    @action(detail=True, methods=["get"], url_path="effective-exam-period")
+    def effective_exam_period(self, request, pk=None):
+        semester = self.get_object()
+        faculty_id = request.query_params.get("faculty")
+        department_id = request.query_params.get("department")
+
+        from hierarchy.models import Faculty, Department
+        faculty = Faculty.objects.filter(id=faculty_id).first() if faculty_id else None
+        department = Department.objects.filter(id=department_id).first() if department_id else None
+
+        school = semester.session.school
+        perm = GenerationScopePermission.objects.filter(school=school).first()
+        allow_faculty_exam = bool(perm and perm.allow_faculty_exam_period)
+
+        start_date, end_date, source, fep = get_effective_exam_period(
+            semester, faculty=faculty, department=department
+        )
+
+        return Response({
+            "semester_id": semester.id,
+            "school_id": school.id,
+            "school_exam_start_date": semester.exam_start_date,
+            "school_exam_end_date": semester.exam_end_date,
+            "allow_faculty_exam_period": allow_faculty_exam,
+            "effective_start_date": start_date,
+            "effective_end_date": end_date,
+            "source": source,
+            "is_set": bool(start_date and end_date),
+            "faculty_id": faculty.id if faculty else None,
+            "faculty_name": faculty.name if faculty else None,
+        })
 
 
 
@@ -728,6 +888,8 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
         scope_id = request.query_params.get("scope_id")
         if scope_id:
             qs = qs.filter(scope_id=scope_id)
+        if user.id:
+            qs = qs.filter(initiated_by_id=user.id)
 
         return Response(TimetableGenerationRunSerializer(qs[:50], many=True).data)
 
@@ -792,6 +954,9 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
             serializer = GenerationScopePermissionSerializer(perm, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
+            # If allow_faculty_exam_period is revoked, clear custom faculty exam periods for this school
+            if not perm.allow_faculty_exam_period:
+                FacultyExamPeriod.objects.filter(faculty__school_id=school_id).delete()
             return Response(serializer.data)
 
         # GET

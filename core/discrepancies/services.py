@@ -320,7 +320,13 @@ def apply_discrepancy_request(discrepancy):
             sessions_to_update.update(status=LectureSession.Status.CANCELLED)
         elif req_type == DiscrepancyRequest.RequestType.POSTPONE:
             entry.status = TimetableEntry.Status.POSTPONED
-            sessions_to_update.update(status=LectureSession.Status.POSTPONED)
+        if entry.semester and entry.entry_type == TimetableEntry.EntryType.LECTURE:
+            l_start = entry.semester.lecture_start_date or entry.semester.start_date
+            l_end = entry.semester.lecture_end_date or entry.semester.end_date
+            if not entry.recurrence_start_date or entry.recurrence_start_date < l_start:
+                entry.recurrence_start_date = l_start
+            if not entry.recurrence_end_date or entry.recurrence_end_date > l_end:
+                entry.recurrence_end_date = l_end
 
         entry.save()
         if entry.entry_type == TimetableEntry.EntryType.LECTURE and entry.recurrence_rule:
