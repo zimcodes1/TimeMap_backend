@@ -166,17 +166,23 @@ class AcademicSessionSerializer(serializers.ModelSerializer):
         return attrs
 
 
+from hierarchy.models import Program
+
 class TimetableEntrySerializer(serializers.ModelSerializer):
-    course_code = serializers.ReadOnlyField(source="course.code")
-    course_title = serializers.ReadOnlyField(source="course.title")
-    course_level = serializers.ReadOnlyField(source="course.level")
+    target_program = serializers.PrimaryKeyRelatedField(
+        queryset=Program.objects.all(), required=False, allow_null=True
+    )
+    target_level = serializers.IntegerField(required=False, allow_null=True)
+    course_code = serializers.SerializerMethodField()
+    course_title = serializers.SerializerMethodField()
+    course_level = serializers.SerializerMethodField()
     course_type = serializers.ReadOnlyField(source="course.course_type")
     department_id = serializers.ReadOnlyField(source="course.owning_department_id")
     department_name = serializers.ReadOnlyField(source="course.owning_department.name")
     faculty_id = serializers.ReadOnlyField(source="course.owning_department.faculty_id")
     faculty_name = serializers.ReadOnlyField(source="course.owning_department.faculty.name")
-    target_program_id = serializers.ReadOnlyField(source="course.target_program_id")
-    target_program_name = serializers.ReadOnlyField(source="course.target_program.name")
+    target_program_id = serializers.SerializerMethodField()
+    target_program_name = serializers.SerializerMethodField()
     program_scope = serializers.ReadOnlyField(source="course.program_scope")
     venue_name = serializers.ReadOnlyField(source="venue.name")
     venue_capacity = serializers.ReadOnlyField(source="venue.capacity")
@@ -205,8 +211,10 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             "department_name",
             "faculty_id",
             "faculty_name",
+            "target_program",
             "target_program_id",
             "target_program_name",
+            "target_level",
             "program_scope",
             "venue",
             "venue_name",
@@ -232,6 +240,35 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             "created_at",
         )
         read_only_fields = ("id", "created_by", "created_at")
+
+    def get_course_code(self, obj) -> str:
+        if obj.course:
+            return obj.course.code
+        return "EVENT" if obj.entry_type == "event" else ""
+
+    def get_course_title(self, obj) -> str:
+        if obj.course:
+            return obj.course.title
+        return obj.title or ("Event" if obj.entry_type == "event" else "")
+
+    def get_course_level(self, obj) -> int | None:
+        if obj.course:
+            return obj.course.level
+        return obj.target_level
+
+    def get_target_program_id(self, obj) -> str | None:
+        if obj.course and obj.course.target_program_id:
+            return str(obj.course.target_program_id)
+        if obj.target_program_id:
+            return str(obj.target_program_id)
+        return None
+
+    def get_target_program_name(self, obj) -> str | None:
+        if obj.course and obj.course.target_program:
+            return obj.course.target_program.name
+        if obj.target_program:
+            return obj.target_program.name
+        return None
 
     def _get_conflict_info(self, obj):
         if hasattr(obj, "_cached_conflict_info"):
@@ -364,6 +401,27 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
                         attrs["recurrence_end_date"] = l_end
                         recurrence_end_date = l_end
 
+            elif entry_type == "event":
+                title = attrs.get("title", self.instance.title if self.instance else None)
+                if not title:
+                    raise serializers.ValidationError({"title": "Event title or name is required."})
+                event_date = recurrence_start_date or attrs.get("start_date")
+                if not event_date:
+                    raise serializers.ValidationError({"recurrence_start_date": "Event date is required."})
+                if isinstance(event_date, str):
+                    try:
+                        event_date = datetime.date.fromisoformat(event_date)
+                    except ValueError:
+                        pass
+                if isinstance(event_date, (datetime.date, datetime.datetime)):
+                    if isinstance(event_date, datetime.datetime):
+                        event_date = event_date.date()
+                    if event_date < datetime.date.today():
+                        raise serializers.ValidationError({"recurrence_start_date": "An event's date cannot be in the past."})
+                attrs["recurrence_start_date"] = event_date
+                attrs["recurrence_end_date"] = event_date
+                attrs["recurrence_rule"] = None
+
             elif entry_type == "exam":
                 if not semester:
                     raise serializers.ValidationError({"semester": "An active semester is required for exam scheduling."})
@@ -471,6 +529,28 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
                 defaults={"registered_candidates_count": 0},
             )
 
+        # Automatically materialize event session and shift conflicting sessions
+        elif entry.entry_type == TimetableEntry.EntryType.EVENT and entry.recurrence_start_date:
+            session_date = entry.recurrence_start_date
+            overlapping_sessions = LectureSession.objects.filter(
+                venue=entry.venue,
+                session_date=session_date,
+                session_start_time__lt=entry.end_time,
+                session_end_time__gt=entry.start_time,
+            ).exclude(timetable_entry=entry)
+            overlapping_sessions.update(status=LectureSession.Status.SHIFTED)
+
+            LectureSession.objects.get_or_create(
+                timetable_entry=entry,
+                session_date=session_date,
+                defaults={
+                    "session_start_time": entry.start_time,
+                    "session_end_time": entry.end_time,
+                    "venue": entry.venue,
+                    "status": LectureSession.Status.SCHEDULED,
+                },
+            )
+
         return entry
 
 
@@ -478,14 +558,14 @@ class LectureSessionSerializer(serializers.ModelSerializer):
     timetable_entry_title = serializers.ReadOnlyField(source="timetable_entry.title")
     entry_type = serializers.ReadOnlyField(source="timetable_entry.entry_type")
     course_id = serializers.ReadOnlyField(source="timetable_entry.course_id")
-    course_code = serializers.ReadOnlyField(source="timetable_entry.course.code")
-    course_title = serializers.ReadOnlyField(source="timetable_entry.course.title")
-    course_level = serializers.ReadOnlyField(source="timetable_entry.course.level")
+    course_code = serializers.SerializerMethodField()
+    course_title = serializers.SerializerMethodField()
+    course_level = serializers.SerializerMethodField()
     department_id = serializers.ReadOnlyField(source="timetable_entry.course.owning_department_id")
     department_name = serializers.ReadOnlyField(source="timetable_entry.course.owning_department.name")
-    target_program_id = serializers.ReadOnlyField(source="timetable_entry.course.target_program_id")
-    program_name = serializers.ReadOnlyField(source="timetable_entry.course.target_program.name")
-    program_code = serializers.ReadOnlyField(source="timetable_entry.course.target_program.code")
+    target_program_id = serializers.SerializerMethodField()
+    program_name = serializers.SerializerMethodField()
+    program_code = serializers.SerializerMethodField()
     program_scope = serializers.ReadOnlyField(source="timetable_entry.course.program_scope")
     venue_name = serializers.ReadOnlyField(source="venue.name")
     venue_capacity = serializers.ReadOnlyField(source="venue.capacity")
@@ -536,6 +616,50 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             "report_id",
         )
         read_only_fields = ("id",)
+
+    def get_course_code(self, obj) -> str:
+        te = obj.timetable_entry
+        if te and te.course:
+            return te.course.code
+        return "EVENT" if (te and te.entry_type == "event") else ""
+
+    def get_course_title(self, obj) -> str:
+        te = obj.timetable_entry
+        if te and te.course:
+            return te.course.title
+        if te and te.title:
+            return te.title
+        return "Event" if (te and te.entry_type == "event") else ""
+
+    def get_course_level(self, obj) -> int | None:
+        te = obj.timetable_entry
+        if te and te.course:
+            return te.course.level
+        return te.target_level if te else None
+
+    def get_target_program_id(self, obj) -> str | None:
+        te = obj.timetable_entry
+        if te and te.course and te.course.target_program_id:
+            return str(te.course.target_program_id)
+        if te and te.target_program_id:
+            return str(te.target_program_id)
+        return None
+
+    def get_program_name(self, obj) -> str | None:
+        te = obj.timetable_entry
+        if te and te.course and te.course.target_program:
+            return te.course.target_program.name
+        if te and te.target_program:
+            return te.target_program.name
+        return None
+
+    def get_program_code(self, obj) -> str | None:
+        te = obj.timetable_entry
+        if te and te.course and te.course.target_program:
+            return te.course.target_program.code
+        if te and te.target_program:
+            return te.target_program.code
+        return None
 
     def get_report_id(self, obj) -> str | None:
         try:
