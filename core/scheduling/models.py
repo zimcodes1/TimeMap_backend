@@ -18,6 +18,9 @@ class AcademicSession(models.Model):
     label = models.CharField(max_length=20)  # e.g., "2026/2027"
     start_date = models.DateField()
     end_date = models.DateField()
+    max_semesters = models.PositiveSmallIntegerField(
+        default=2, help_text="Configured number of semesters for this session."
+    )
     is_current = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -36,6 +39,8 @@ class AcademicSession(models.Model):
         super().clean()
         if self.start_date and self.end_date and self.start_date >= self.end_date:
             raise ValidationError("Session start date must be before end date.")
+        if self.max_semesters is not None and (self.max_semesters < 1 or self.max_semesters > 6):
+            raise ValidationError("Max semesters per session must be between 1 and 6.")
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -54,6 +59,8 @@ class Semester(models.Model):
     class SemesterName(models.TextChoices):
         FIRST = "first", "First Semester"
         SECOND = "second", "Second Semester"
+        THIRD = "third", "Third Semester"
+        FOURTH = "fourth", "Fourth Semester"
 
     class DurationType(models.TextChoices):
         WEEKS = "weeks", "Weeks"
@@ -90,6 +97,14 @@ class Semester(models.Model):
         super().clean()
         if self.start_date and self.end_date and self.start_date >= self.end_date:
             raise ValidationError("Semester start date must be before end date.")
+        if self.session_id:
+            max_allowed = getattr(self.session, "max_semesters", 2) or 2
+            ordinal_map = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+            ordinal = ordinal_map.get(self.name)
+            if ordinal and ordinal > max_allowed:
+                raise ValidationError(
+                    f"'{self.get_name_display()}' exceeds the maximum allowed semesters ({max_allowed}) for this session."
+                )
         if not self.lecture_start_date or not self.lecture_end_date:
             raise ValidationError("Lecture start and end dates are required.")
         if self.lecture_start_date and self.lecture_end_date:

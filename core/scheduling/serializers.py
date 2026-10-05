@@ -58,6 +58,24 @@ class SemesterSerializer(serializers.ModelSerializer):
                     if session and user.admin_profile.scope_school_id and session.school_id != user.admin_profile.scope_school_id:
                         raise serializers.ValidationError({"session": "School admins can only manage semesters within their assigned school."})
 
+        # Validate name against session's configured max_semesters
+        name = attrs.get("name", self.instance.name if self.instance else None)
+        if session and name:
+            max_allowed = getattr(session, "max_semesters", 2) or 2
+            ordinal_map = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+            ordinal = ordinal_map.get(name)
+            if ordinal and ordinal > max_allowed:
+                raise serializers.ValidationError({
+                    "name": f"'{name.capitalize()} Semester' is not permitted because session '{session.label}' only allows up to {max_allowed} semesters."
+                })
+
+            if not self.instance:
+                current_count = session.semesters.count()
+                if current_count >= max_allowed:
+                    raise serializers.ValidationError({
+                        "session": f"Session '{session.label}' has already reached its maximum of {max_allowed} semesters."
+                    })
+
         # Mandatory lecture start and end dates
         lecture_start = attrs.get("lecture_start_date", self.instance.lecture_start_date if self.instance else None)
         lecture_end = attrs.get("lecture_end_date", self.instance.lecture_end_date if self.instance else None)
@@ -119,6 +137,7 @@ class AcademicSessionSerializer(serializers.ModelSerializer):
             "label",
             "start_date",
             "end_date",
+            "max_semesters",
             "is_current",
             "semesters",
             "created_at",
@@ -134,6 +153,16 @@ class AcademicSessionSerializer(serializers.ModelSerializer):
                 if hasattr(user, "admin_profile") and user.admin_profile.level == "school":
                     if school and user.admin_profile.scope_school_id and school.id != user.admin_profile.scope_school_id:
                         raise serializers.ValidationError({"school": "School admins can only create sessions for their assigned school."})
+
+        max_semesters = attrs.get("max_semesters")
+        if max_semesters is not None:
+            if max_semesters < 1 or max_semesters > 6:
+                raise serializers.ValidationError({"max_semesters": "Max semesters per session must be between 1 and 6."})
+            if self.instance and self.instance.semesters.count() > max_semesters:
+                raise serializers.ValidationError({
+                    "max_semesters": f"Cannot set max semesters to {max_semesters} because this session already has {self.instance.semesters.count()} semesters."
+                })
+
         return attrs
 
 

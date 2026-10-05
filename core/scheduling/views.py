@@ -75,6 +75,30 @@ class AcademicSessionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(is_current=is_current.lower() in ["true", "1"])
         return qs.order_by("-start_date")
 
+    def perform_create(self, serializer):
+        is_current = serializer.validated_data.get("is_current", False)
+        school = serializer.validated_data.get("school")
+        if is_current and school:
+            AcademicSession.objects.filter(school=school).update(is_current=False)
+        serializer.save()
+
+    def perform_update(self, serializer):
+        is_current = serializer.validated_data.get("is_current", False)
+        instance = serializer.instance
+        school = serializer.validated_data.get("school", instance.school)
+        if is_current and school:
+            AcademicSession.objects.filter(school=school).exclude(id=instance.id).update(is_current=False)
+        serializer.save()
+
+    @extend_schema(summary="Set this session as current for the school", responses={200: AcademicSessionSerializer})
+    @action(detail=True, methods=["post"], url_path="set-current")
+    def set_current(self, request, pk=None):
+        session = self.get_object()
+        AcademicSession.objects.filter(school=session.school).exclude(id=session.id).update(is_current=False)
+        session.is_current = True
+        session.save(update_fields=["is_current"])
+        return Response(self.get_serializer(session).data, status=status.HTTP_200_OK)
+
 
 class SemesterViewSet(viewsets.ModelViewSet):
     serializer_class = SemesterSerializer
