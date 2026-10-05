@@ -90,11 +90,12 @@ class ProgramSerializer(serializers.ModelSerializer):
 class DepartmentSerializer(serializers.ModelSerializer):
     faculty_name = serializers.ReadOnlyField(source="faculty.name")
     school_name = serializers.ReadOnlyField(source="faculty.school.name")
+    computed_max_level = serializers.ReadOnlyField()
     programs = ProgramSerializer(many=True, read_only=True)
 
     class Meta:
         model = Department
-        fields = ("id", "faculty", "faculty_name", "school_name", "name", "code", "max_level", "programs", "created_at")
+        fields = ("id", "faculty", "faculty_name", "school_name", "name", "code", "max_level", "computed_max_level", "programs", "created_at")
         read_only_fields = ("id", "created_at")
 
     def validate_code(self, value):

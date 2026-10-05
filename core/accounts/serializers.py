@@ -273,17 +273,23 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             scope_name = instance.scope_department.name
             data["scope_department_id"] = instance.scope_department.id
             data["scope_department"] = instance.scope_department.name
+            data["department_id"] = instance.scope_department.id
+            data["department_name"] = instance.scope_department.name
             data["department"] = instance.scope_department.name
         elif instance.level == "faculty" and instance.scope_faculty:
             scope_id = instance.scope_faculty.id
             scope_name = instance.scope_faculty.name
             data["scope_faculty_id"] = instance.scope_faculty.id
             data["scope_faculty"] = instance.scope_faculty.name
+            data["faculty_id"] = instance.scope_faculty.id
+            data["faculty_name"] = instance.scope_faculty.name
         elif instance.level == "school" and instance.scope_school:
             scope_id = instance.scope_school.id
             scope_name = instance.scope_school.name
             data["scope_school_id"] = instance.scope_school.id
             data["scope_school"] = instance.scope_school.name
+            data["school_id"] = instance.scope_school.id
+            data["school_name"] = instance.scope_school.name
         elif instance.level in ["system", "university"]:
             scope_id = None
             scope_name = "System Wide"

@@ -156,6 +156,19 @@ class TimetableEntry(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SCHEDULED)
     created_by = models.ForeignKey(AdminOfficer, on_delete=models.CASCADE, related_name="created_timetable_entries")
     semester = models.ForeignKey(Semester, null=True, blank=True, on_delete=models.SET_NULL, related_name="timetable_entries")
+    target_program = models.ForeignKey(
+        "hierarchy.Program",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="targeted_timetable_entries",
+        help_text="Optional target program cohort for department/faculty/school events.",
+    )
+    target_level = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Optional target level for events (e.g. 100, 200, 300, 400, 500). Null means general / all levels.",
+    )
     academic_session = models.CharField(max_length=20, blank=True, default="")  # Deprecated — kept for data migration
     created_at = models.DateTimeField(auto_now_add=True)
 

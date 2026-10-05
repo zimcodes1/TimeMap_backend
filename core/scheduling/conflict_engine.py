@@ -366,6 +366,14 @@ def determine_booking_routing(
             "message": "Booking touches a venue outside your direct scope and has been routed to the corresponding Faculty/Scope Admin Officer for approval.",
         }
 
+    if entry_type == "event":
+        return {
+            "outcome": "PROCEED",
+            "routed_to_admin_id": admin_prof.id if admin_prof else None,
+            "conflicts": [],
+            "overwritten_conflicts": all_conflicts,
+        }
+
     if all_conflicts:
         return {
             "outcome": "HARD_REJECT",
