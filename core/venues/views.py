@@ -33,17 +33,16 @@ class VenueViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
-            return Venue.objects.all()
-
-        # If course filter is passed, return venues matching course scope via optimizer filter_allowed_venues
         params = getattr(self.request, "query_params", getattr(self.request, "GET", {}))
         course_param = params.get("course") or params.get("course_id")
+
+        qs = None
         if course_param:
             from courses.models import Course, CourseAccessGrant
             from scheduling.optimizer.models.course import CourseData
             from scheduling.optimizer.models.venue import VenueData
             from scheduling.optimizer.preprocessing.venues import filter_allowed_venues
+
             try:
                 course = (
                     Course.objects.select_related(
@@ -109,64 +108,194 @@ class VenueViewSet(viewsets.ModelViewSet):
 
                     allowed_ids = filter_allowed_venues(c_data, v_data)
                     if allowed_ids:
-                        return venues_qs.filter(id__in=allowed_ids).order_by("name")
+                        qs = venues_qs.filter(id__in=allowed_ids)
+                    else:
+                        qs = Venue.objects.none()
             except Exception:
                 pass
 
-        if (user.role in ["admin", "system_admin"] or user.is_superuser) and hasattr(user, "admin_profile"):
-            admin_prof = user.admin_profile
-            level = admin_prof.level
+        if qs is None:
+            if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+                qs = Venue.objects.all()
+            elif (user.role in ["admin", "system_admin"] or user.is_superuser) and hasattr(user, "admin_profile"):
+                admin_prof = user.admin_profile
+                level = admin_prof.level
 
-            if level in ["system", "university"]:
-                return Venue.objects.all().order_by("name")
-            elif level == "school":
-                if not admin_prof.scope_school:
-                    return Venue.objects.none()
-                return Venue.objects.filter(
-                    Q(owning_level=Venue.OwningLevel.SCHOOL, owning_school=admin_prof.scope_school)
-                    | Q(owning_level=Venue.OwningLevel.FACULTY, owning_faculty__school=admin_prof.scope_school)
-                    | Q(owning_level=Venue.OwningLevel.DEPARTMENT, owning_department__faculty__school=admin_prof.scope_school)
-                ).distinct().order_by("name")
-            elif level == "faculty":
-                if not admin_prof.scope_faculty:
-                    return Venue.objects.none()
-                return Venue.objects.filter(
-                    Q(owning_level=Venue.OwningLevel.FACULTY, owning_faculty=admin_prof.scope_faculty)
-                    | Q(owning_level=Venue.OwningLevel.DEPARTMENT, owning_department__faculty=admin_prof.scope_faculty)
-                ).distinct().order_by("name")
-            elif level == "department":
-                if not admin_prof.scope_department:
-                    return Venue.objects.none()
-                return Venue.objects.filter(
-                    Q(owning_level=Venue.OwningLevel.DEPARTMENT, owning_department=admin_prof.scope_department)
-                    | Q(owning_level=Venue.OwningLevel.FACULTY, owning_faculty=admin_prof.scope_department.faculty)
-                ).distinct().order_by("name")
+                if level in ["system", "university"]:
+                    qs = Venue.objects.all()
+                elif level == "school":
+                    if not admin_prof.scope_school:
+                        qs = Venue.objects.none()
+                    else:
+                        qs = Venue.objects.filter(
+                            Q(owning_level=Venue.OwningLevel.SCHOOL, owning_school=admin_prof.scope_school)
+                            | Q(owning_level=Venue.OwningLevel.FACULTY, owning_faculty__school=admin_prof.scope_school)
+                            | Q(owning_level=Venue.OwningLevel.DEPARTMENT, owning_department__faculty__school=admin_prof.scope_school)
+                        ).distinct()
+                elif level == "faculty":
+                    if not admin_prof.scope_faculty:
+                        qs = Venue.objects.none()
+                    else:
+                        qs = Venue.objects.filter(
+                            Q(owning_level=Venue.OwningLevel.FACULTY, owning_faculty=admin_prof.scope_faculty)
+                            | Q(owning_level=Venue.OwningLevel.DEPARTMENT, owning_department__faculty=admin_prof.scope_faculty)
+                        ).distinct()
+                elif level == "department":
+                    if not admin_prof.scope_department:
+                        qs = Venue.objects.none()
+                    else:
+                        qs = Venue.objects.filter(
+                            Q(owning_level=Venue.OwningLevel.DEPARTMENT, owning_department=admin_prof.scope_department)
+                            | Q(owning_level=Venue.OwningLevel.FACULTY, owning_faculty=admin_prof.scope_department.faculty)
+                        ).distinct()
+            elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
+                lec_dept = user.lecturer_profile.department
+                if lec_dept:
+                    fac = lec_dept.faculty
+                    sch = fac.school if fac else None
+                    conds = Q(owning_department=lec_dept)
+                    if fac:
+                        conds |= Q(owning_faculty=fac)
+                    if sch:
+                        conds |= Q(owning_school=sch)
+                    qs = Venue.objects.filter(conds, is_active=True).distinct()
+                else:
+                    qs = Venue.objects.none()
+            elif user.role == "student" and hasattr(user, "student_profile"):
+                stu_dept = user.student_profile.department
+                if stu_dept:
+                    fac = stu_dept.faculty
+                    sch = fac.school if fac else None
+                    conds = Q(owning_department=stu_dept)
+                    if fac:
+                        conds |= Q(owning_faculty=fac)
+                    if sch:
+                        conds |= Q(owning_school=sch)
+                    qs = Venue.objects.filter(conds, is_active=True).distinct()
+                else:
+                    qs = Venue.objects.none()
+            else:
+                qs = Venue.objects.none()
 
-        if user.role == "lecturer" and hasattr(user, "lecturer_profile"):
-            lec_dept = user.lecturer_profile.department
-            if lec_dept:
-                fac = lec_dept.faculty
-                sch = fac.school if fac else None
-                conds = Q(owning_department=lec_dept)
-                if fac:
-                    conds |= Q(owning_faculty=fac)
-                if sch:
-                    conds |= Q(owning_school=sch)
-                return Venue.objects.filter(conds, is_active=True).distinct().order_by("name")
+        # Timeslot availability filtering
+        start_time_param = params.get("start_time")
+        end_time_param = params.get("end_time")
+        available_only = params.get("available_only") in ["true", "True", "1", True] or (start_time_param and end_time_param)
 
-        if user.role == "student" and hasattr(user, "student_profile"):
-            stu_dept = user.student_profile.department
-            if stu_dept:
-                fac = stu_dept.faculty
-                sch = fac.school if fac else None
-                conds = Q(owning_department=stu_dept)
-                if fac:
-                    conds |= Q(owning_faculty=fac)
-                if sch:
-                    conds |= Q(owning_school=sch)
-                return Venue.objects.filter(conds, is_active=True).distinct().order_by("name")
+        if available_only and start_time_param and end_time_param:
+            try:
+                import datetime
+                from scheduling.models import LectureSession, TimetableEntry
 
-        return Venue.objects.none()
+                def _parse_time(t_str):
+                    if isinstance(t_str, datetime.time):
+                        return t_str
+                    parts = str(t_str).strip().split(":")
+                    return datetime.time(
+                        int(parts[0]),
+                        int(parts[1]),
+                        int(parts[2]) if len(parts) > 2 else 0,
+                    )
+
+                req_start = _parse_time(start_time_param)
+                req_end = _parse_time(end_time_param)
+
+                weekday_param = params.get("weekday") or params.get("day_of_week") or params.get("day")
+                date_param = params.get("date")
+                semester_id = params.get("semester")
+                exclude_entry_id = params.get("exclude_entry") or params.get("exclude_timetable_entry")
+                exclude_session_id = params.get("exclude_session")
+
+                WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                DAY_CODES = ["MO", "TU", "WE", "TH", "FR"]
+
+                target_day_idx = None
+                if weekday_param:
+                    weekday_clean = weekday_param.strip().capitalize()
+                    for idx, name in enumerate(WEEKDAY_NAMES):
+                        if name.lower().startswith(weekday_clean[:2].lower()):
+                            target_day_idx = idx
+                            break
+
+                target_date = None
+                if date_param:
+                    try:
+                        target_date = datetime.datetime.strptime(date_param.strip(), "%Y-%m-%d").date()
+                        if target_day_idx is None:
+                            target_day_idx = target_date.weekday()
+                    except ValueError:
+                        pass
+
+                # Jummat Friday 12pm-2pm check: strictly prohibited across the university
+                if target_day_idx == 4:
+                    jummat_start = datetime.time(12, 0)
+                    jummat_end = datetime.time(14, 0)
+                    if req_start < jummat_end and req_end > jummat_start:
+                        return Venue.objects.none()
+
+                booked_venue_ids = set()
+
+                # 1. Check against active LectureSession instances
+                sess_qs = LectureSession.objects.filter(
+                    session_start_time__lt=req_end,
+                    session_end_time__gt=req_start,
+                ).exclude(
+                    status__in=[
+                        LectureSession.Status.CANCELLED,
+                        LectureSession.Status.POSTPONED,
+                    ]
+                )
+
+                if exclude_session_id:
+                    sess_qs = sess_qs.exclude(id=exclude_session_id)
+                if exclude_entry_id:
+                    sess_qs = sess_qs.exclude(timetable_entry_id=exclude_entry_id)
+
+                if target_date:
+                    sess_qs = sess_qs.filter(session_date=target_date)
+                elif target_day_idx is not None:
+                    # In Django ORM, session_date__week_day: 1=Sunday, 2=Monday, 3=Tuesday, 4=Wednesday, 5=Thursday, 6=Friday, 7=Saturday
+                    sess_qs = sess_qs.filter(session_date__week_day=target_day_idx + 2)
+                    if semester_id:
+                        sess_qs = sess_qs.filter(timetable_entry__semester_id=semester_id)
+
+                booked_venue_ids.update(sess_qs.values_list("venue_id", flat=True))
+
+                # 2. Check against TimetableEntry patterns
+                entry_qs = TimetableEntry.objects.filter(
+                    start_time__lt=req_end,
+                    end_time__gt=req_start,
+                ).exclude(
+                    status__in=[
+                        TimetableEntry.Status.CANCELLED,
+                        TimetableEntry.Status.POSTPONED,
+                    ]
+                )
+
+                if exclude_entry_id:
+                    entry_qs = entry_qs.exclude(id=exclude_entry_id)
+                if semester_id:
+                    entry_qs = entry_qs.filter(semester_id=semester_id)
+
+                if target_day_idx is not None:
+                    day_code = DAY_CODES[target_day_idx]
+                    day_name = WEEKDAY_NAMES[target_day_idx]
+                    day_q = Q(recurrence_rule__icontains=day_code) | Q(recurrence_rule__icontains=day_name)
+                    if target_date:
+                        day_q |= Q(recurrence_start_date=target_date, recurrence_rule__isnull=True)
+                    else:
+                        day_q |= Q(recurrence_start_date__week_day=target_day_idx + 2, recurrence_rule__isnull=True)
+                    entry_qs = entry_qs.filter(day_q)
+
+                booked_venue_ids.update(entry_qs.values_list("venue_id", flat=True))
+
+                if booked_venue_ids:
+                    qs = qs.exclude(id__in=booked_venue_ids)
+
+            except Exception:
+                pass
+
+        return qs.distinct().order_by("name")
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
