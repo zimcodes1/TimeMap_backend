@@ -320,6 +320,9 @@ def apply_discrepancy_request(discrepancy):
             sessions_to_update.update(status=LectureSession.Status.CANCELLED)
         elif req_type == DiscrepancyRequest.RequestType.POSTPONE:
             entry.status = TimetableEntry.Status.POSTPONED
+        else:
+            entry.status = TimetableEntry.Status.SCHEDULED
+
         if entry.semester and entry.entry_type == TimetableEntry.EntryType.LECTURE:
             l_start = entry.semester.lecture_start_date or entry.semester.start_date
             l_end = entry.semester.lecture_end_date or entry.semester.end_date
@@ -329,8 +332,47 @@ def apply_discrepancy_request(discrepancy):
                 entry.recurrence_end_date = l_end
 
         entry.save()
-        if entry.entry_type == TimetableEntry.EntryType.LECTURE and entry.recurrence_rule:
-            materialize_timetable_entry(entry)
+        if entry.entry_type == TimetableEntry.EntryType.LECTURE:
+            if entry.recurrence_rule:
+                materialize_timetable_entry(entry)
+            elif entry.recurrence_start_date:
+                LectureSession.objects.get_or_create(
+                    timetable_entry=entry,
+                    session_date=entry.recurrence_start_date,
+                    defaults={
+                        "session_start_time": entry.start_time,
+                        "session_end_time": entry.end_time,
+                        "venue": entry.venue,
+                        "status": LectureSession.Status.SCHEDULED,
+                    },
+                )
+        elif entry.entry_type == TimetableEntry.EntryType.EVENT and entry.recurrence_start_date:
+            LectureSession.objects.get_or_create(
+                timetable_entry=entry,
+                session_date=entry.recurrence_start_date,
+                defaults={
+                    "session_start_time": entry.start_time,
+                    "session_end_time": entry.end_time,
+                    "venue": entry.venue,
+                    "status": LectureSession.Status.SCHEDULED,
+                },
+            )
+        elif entry.entry_type == TimetableEntry.EntryType.EXAM and entry.recurrence_start_date:
+            LectureSession.objects.get_or_create(
+                timetable_entry=entry,
+                session_date=entry.recurrence_start_date,
+                defaults={
+                    "session_start_time": entry.start_time,
+                    "session_end_time": entry.end_time,
+                    "venue": entry.venue,
+                    "status": LectureSession.Status.SCHEDULED,
+                },
+            )
+            from scheduling.models import ExamSitting
+            ExamSitting.objects.get_or_create(
+                timetable_entry=entry,
+                defaults={"registered_candidates_count": 0},
+            )
 
     discrepancy.status = DiscrepancyRequest.Status.APPROVED
     discrepancy.save()
@@ -450,6 +492,11 @@ def reject_discrepancy_request(discrepancy, admin_user, reason=""):
     discrepancy.decided_at = timezone.now()
     discrepancy.save()
 
+    # If request was to create a new booking, cancel the staged entry
+    if discrepancy.request_type == DiscrepancyRequest.RequestType.CREATE_BOOKING and discrepancy.timetable_entry:
+        discrepancy.timetable_entry.status = TimetableEntry.Status.CANCELLED
+        discrepancy.timetable_entry.save(update_fields=["status"])
+
     # Notify requester
     if discrepancy.initiated_by:
         try:
@@ -480,5 +527,10 @@ def withdraw_discrepancy_request(discrepancy, user):
 
     discrepancy.status = DiscrepancyRequest.Status.WITHDRAWN
     discrepancy.save()
+
+    if discrepancy.request_type == DiscrepancyRequest.RequestType.CREATE_BOOKING and discrepancy.timetable_entry:
+        discrepancy.timetable_entry.status = TimetableEntry.Status.CANCELLED
+        discrepancy.timetable_entry.save(update_fields=["status"])
+
     return discrepancy
 

@@ -4,37 +4,44 @@ from .models import LectureSession
 
 
 WEEKDAY_MAP = {
-    "monday": 0, "mon": 0, "0": 0,
-    "tuesday": 1, "tue": 1, "1": 1,
-    "wednesday": 2, "wed": 2, "2": 2,
-    "thursday": 3, "thu": 3, "3": 3,
-    "friday": 4, "fri": 4, "4": 4,
-    "saturday": 5, "sat": 5, "5": 5,
-    "sunday": 6, "sun": 6, "6": 6,
+    "monday": 0, "mon": 0, "mo": 0, "0": 0,
+    "tuesday": 1, "tue": 1, "tu": 1, "1": 1,
+    "wednesday": 2, "wed": 2, "we": 2, "2": 2,
+    "thursday": 3, "thu": 3, "th": 3, "3": 3,
+    "friday": 4, "fri": 4, "fr": 4, "4": 4,
+    "saturday": 5, "sat": 5, "sa": 5, "5": 5,
+    "sunday": 6, "sun": 6, "su": 6, "6": 6,
 }
 
 
 def parse_target_weekdays(rule_str):
     """
-    Parses recurrence rule strings like 'weekly:tuesday', 'weekly:mon,wed,fri', or 'tuesday'
+    Parses recurrence rule strings like:
+    - 'FREQ=WEEKLY;BYDAY=MO,WE' or 'BYDAY=TH'
+    - 'weekly:tuesday', 'weekly:mon,wed,fri', or 'tuesday'
     Returns a set of integer weekdays (0=Monday .. 6=Sunday).
     """
     if not rule_str:
         return set()
 
     rule_clean = rule_str.strip().lower()
-    if ":" in rule_clean:
+
+    if "byday=" in rule_clean:
+        day_part = rule_clean.split("byday=")[1].split(";")[0]
+    elif ":" in rule_clean:
         parts = rule_clean.split(":")
         day_part = parts[-1]
     else:
         day_part = rule_clean
 
     target_days = set()
-    for token in day_part.split(","):
+    for token in day_part.replace(",", " ").split():
         token = token.strip()
-        for word in token.split():
+        if token in WEEKDAY_MAP:
+            target_days.add(WEEKDAY_MAP[token])
+        else:
             for key, val in WEEKDAY_MAP.items():
-                if key == word or (len(key) >= 3 and key in word):
+                if len(key) >= 3 and key in token:
                     target_days.add(val)
                     break
     return target_days

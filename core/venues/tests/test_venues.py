@@ -72,7 +72,10 @@ class VenueTests(APITestCase):
             start_time=datetime.time(8, 0),
             end_time=datetime.time(10, 0),
             recurrence_rule="FREQ=WEEKLY;BYDAY=MO",
-            status=TimetableEntry.Status.PUBLISHED,
+            status=TimetableEntry.Status.SCHEDULED,
+            entry_type=TimetableEntry.EntryType.LECTURE,
+            title="Booked Slot",
+            created_by=self.dept_admin,
         )
 
         self.client.force_authenticate(user=self.dept_admin_user)
