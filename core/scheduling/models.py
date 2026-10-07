@@ -141,6 +141,7 @@ class TimetableEntry(models.Model):
         SHIFTED = "shifted", "Shifted"
         POSTPONED = "postponed", "Postponed"
         CANCELLED = "cancelled", "Cancelled"
+        PENDING_APPROVAL = "pending_approval", "Pending Approval"
 
     entry_type = models.CharField(max_length=20, choices=EntryType.choices)
     title = models.CharField(max_length=255)

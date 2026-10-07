@@ -387,6 +387,11 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
         exclude_entry_type = self.request.query_params.get("exclude_entry_type")
         if exclude_entry_type:
             qs = qs.exclude(entry_type=exclude_entry_type)
+
+        include_pending = self.request.query_params.get("include_pending") in ["true", "1", True]
+        if not include_pending:
+            qs = qs.exclude(status=TimetableEntry.Status.PENDING_APPROVAL)
+
         return qs.distinct()
 
     def get_permissions(self):
@@ -555,7 +560,7 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
             dt = timezone.make_aware(dt)
         if dt <= now:
             return Response(
-                {"detail": "Past lectures cannot be shifted or rescheduled."},
+                {"detail": "Past lectures/events cannot be shifted or rescheduled."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

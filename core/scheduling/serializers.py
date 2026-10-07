@@ -1,5 +1,6 @@
 import datetime
 from django.utils import timezone
+from accounts.models import AdminOfficer
 from courses.models import CourseRegistration
 from discrepancies.models import DiscrepancyRequest
 from rest_framework import serializers
@@ -488,21 +489,55 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             request = self.context.get("request")
             user = request.user if request else None
 
+            # Stage the entry in the database with PENDING_APPROVAL status
+            validated_data["status"] = TimetableEntry.Status.PENDING_APPROVAL
+            entry = super().create(validated_data)
+
+            routed_to_id = routing_info.get("routed_to_admin_id")
+            if not routed_to_id:
+                try:
+                    from discrepancies.services import resolve_discrepancy_routing_admin
+                    target_admin = resolve_discrepancy_routing_admin(entry.venue)
+                    if target_admin:
+                        routed_to_id = target_admin.id
+                except Exception:
+                    pass
+
             discrepancy = DiscrepancyRequest.objects.create(
+                timetable_entry=entry,
                 request_type=DiscrepancyRequest.RequestType.CREATE_BOOKING,
-                proposed_venue=validated_data.get("venue"),
-                proposed_start_time=validated_data.get("start_time"),
-                proposed_date=validated_data.get("recurrence_start_date"),
-                reason=f"Booking request for '{validated_data.get('title')}' against cross-level venue",
+                proposed_venue=entry.venue,
+                proposed_start_time=entry.start_time,
+                proposed_end_time=entry.end_time,
+                proposed_date=entry.recurrence_start_date,
+                reason=f"Booking request for '{entry.title}' against cross-level venue",
                 initiated_by=user,
-                routed_to_id=routing_info.get("routed_to_admin_id"),
+                routed_to_id=routed_to_id,
                 status=DiscrepancyRequest.Status.PENDING,
             )
+
+            # Dispatch in-app notification to routed admin officer
+            if routed_to_id:
+                try:
+                    routed_admin = AdminOfficer.objects.filter(id=routed_to_id).first()
+                    if routed_admin and routed_admin.user:
+                        from notifications.models import Notification
+                        from notifications.services import dispatch_event_notification
+                        venue_name = entry.venue.name if entry.venue else "a venue"
+                        dispatch_event_notification(
+                            recipient=routed_admin.user,
+                            notification_type=Notification.NotificationType.DISCREPANCY_SUBMITTED,
+                            title="New Discrepancy Request Pending Approval",
+                            body=f"Booking request for '{entry.title}' in venue '{venue_name}' has been routed to you for approval.",
+                            related_model="DiscrepancyRequest",
+                            related_id=discrepancy.id,
+                        )
+                except Exception as notif_err:
+                    import logging
+                    logging.getLogger(__name__).warning("Failed to dispatch discrepancy notification: %s", notif_err)
+
             # Attach discrepancy reference to serializer context/attribute
             self.context["pending_discrepancy"] = discrepancy
-            # Return dummy unsaved/placeholder entry object or marker
-            entry = TimetableEntry(**validated_data)
-            entry.id = None
             return entry
 
         entry = super().create(validated_data)
