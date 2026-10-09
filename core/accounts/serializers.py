@@ -244,7 +244,14 @@ class LecturerProfileSerializer(serializers.ModelSerializer):
         if staff_id and instance.user.identifier != staff_id.strip().upper():
             instance.user.identifier = staff_id.strip().upper()
             instance.user.save()
-        return super().update(instance, validated_data)
+        lecturer = super().update(instance, validated_data)
+        if hasattr(lecturer.user, "admin_profile"):
+            admin_prof = lecturer.user.admin_profile
+            admin_prof.full_name = lecturer.full_name
+            admin_prof.staff_id = lecturer.staff_id
+            admin_prof.email = lecturer.email
+            admin_prof.save(update_fields=["full_name", "staff_id", "email"])
+        return lecturer
 
 
 class AdminProfileSerializer(serializers.ModelSerializer):
@@ -262,6 +269,9 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             "scope_department",
             "scope_faculty",
             "scope_school",
+            "is_lecturer",
+            "lecturer_department",
+            "is_exam_officer",
         )
 
     def to_representation(self, instance):
@@ -300,6 +310,11 @@ class AdminProfileSerializer(serializers.ModelSerializer):
         data["scope_level"] = "system" if instance.level in ["system", "university"] else instance.level
         data["scope_id"] = scope_id
         data["scope_name"] = scope_name
+
+        data["is_lecturer"] = instance.is_lecturer
+        data["lecturer_department_id"] = instance.lecturer_department_id
+        data["lecturer_department_name"] = instance.lecturer_department.name if instance.lecturer_department else None
+        data["is_exam_officer"] = instance.is_exam_officer
         return data
 
     def validate(self, attrs):
@@ -320,15 +335,17 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             if qs_user.exists():
                 raise serializers.ValidationError({"staff_id": f"Staff ID or identifier '{staff_clean}' is already registered."})
 
+        target_level = attrs.get("level") if "level" in attrs else (instance.level if instance else None)
+        scope_dept = attrs.get("scope_department") if "scope_department" in attrs else (instance.scope_department if instance else None)
+        scope_fac = attrs.get("scope_faculty") if "scope_faculty" in attrs else (instance.scope_faculty if instance else None)
+        scope_sch = attrs.get("scope_school") if "scope_school" in attrs else (instance.scope_school if instance else None)
+
         # Enforce administrative level hierarchy & scope boundary rules
         if request and request.user and request.user.is_authenticated:
             req_user = request.user
             if not (req_user.is_superuser or (req_user.is_staff and not hasattr(req_user, "admin_profile"))):
                 if hasattr(req_user, "admin_profile"):
                     admin_prof = req_user.admin_profile
-                    target_level = attrs.get("level") if "level" in attrs else (instance.level if instance else None)
-                    scope_dept = attrs.get("scope_department") if "scope_department" in attrs else (instance.scope_department if instance else None)
-                    scope_fac = attrs.get("scope_faculty") if "scope_faculty" in attrs else (instance.scope_faculty if instance else None)
 
                     if admin_prof.level == "department":
                         raise serializers.ValidationError({"detail": "Department level admins cannot create or modify admin officer accounts."})
@@ -351,9 +368,55 @@ class AdminProfileSerializer(serializers.ModelSerializer):
                         if target_level != "school":
                             raise serializers.ValidationError({"level": "System level admins can only create or manage school level admin accounts."})
 
+        # Dual Role: Lecturer Profile Validation
+        is_lecturer = attrs.get("is_lecturer") if "is_lecturer" in attrs else (instance.is_lecturer if instance else False)
+        lecturer_dept = attrs.get("lecturer_department") if "lecturer_department" in attrs else (instance.lecturer_department if instance else None)
+
+        if is_lecturer:
+            # If target level is department, auto-populate or enforce lecturer_department to scope_department
+            if target_level == "department":
+                if not lecturer_dept and scope_dept:
+                    attrs["lecturer_department"] = scope_dept
+                    lecturer_dept = scope_dept
+                elif lecturer_dept and scope_dept and lecturer_dept.id != scope_dept.id:
+                    raise serializers.ValidationError({
+                        "lecturer_department": "For department-level admins, the lecturer department must match their scoped department."
+                    })
+
+            if not lecturer_dept:
+                raise serializers.ValidationError({
+                    "lecturer_department": "Please select a department for the lecturer profile."
+                })
+
+            # Check that lecturer_dept is within admin scope
+            if target_level == "faculty" and scope_fac:
+                if lecturer_dept.faculty_id != scope_fac.id:
+                    raise serializers.ValidationError({
+                        "lecturer_department": f"Selected lecturer department must belong to faculty '{scope_fac.name}'."
+                    })
+            elif target_level == "school" and scope_sch:
+                if not lecturer_dept.faculty or lecturer_dept.faculty.school_id != scope_sch.id:
+                    raise serializers.ValidationError({
+                        "lecturer_department": f"Selected lecturer department must belong to school '{scope_sch.name}'."
+                    })
+        else:
+            # If removing lecturer role, ensure no courses are currently assigned
+            if instance and instance.is_lecturer and hasattr(instance.user, "lecturer_profile"):
+                lec_profile = instance.user.lecturer_profile
+                if lec_profile.assigned_courses.exists():
+                    course_codes = list(lec_profile.assigned_courses.values_list("code", flat=True)[:5])
+                    raise serializers.ValidationError({
+                        "is_lecturer": f"Cannot remove lecturer role while this user is assigned to active courses: {', '.join(course_codes)}."
+                    })
+
+        # Exam Officer Validation
+        is_exam_officer = attrs.get("is_exam_officer") if "is_exam_officer" in attrs else (instance.is_exam_officer if instance else False)
+        if is_exam_officer and target_level not in ["department", "faculty", "school"]:
+            raise serializers.ValidationError({
+                "is_exam_officer": "Exam officers must be assigned to a department, faculty, or school."
+            })
 
         return attrs
-
 
     def create(self, validated_data):
         staff_id = validated_data.get("staff_id", "").strip().upper()
@@ -370,6 +433,19 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             user.save()
 
         admin_officer = AdminOfficer.objects.create(user=user, **validated_data)
+
+        # Synchronize LecturerStaff if is_lecturer is True
+        if admin_officer.is_lecturer and admin_officer.lecturer_department:
+            LecturerStaff.objects.update_or_create(
+                user=user,
+                defaults={
+                    "staff_id": admin_officer.staff_id,
+                    "full_name": admin_officer.full_name,
+                    "department": admin_officer.lecturer_department,
+                    "email": admin_officer.email,
+                },
+            )
+
         return admin_officer
 
     def update(self, instance, validated_data):
@@ -377,7 +453,27 @@ class AdminProfileSerializer(serializers.ModelSerializer):
         if staff_id and instance.user.identifier != staff_id.strip().upper():
             instance.user.identifier = staff_id.strip().upper()
             instance.user.save()
-        return super().update(instance, validated_data)
+
+        admin_officer = super().update(instance, validated_data)
+
+        # Synchronize LecturerStaff
+        if admin_officer.is_lecturer and admin_officer.lecturer_department:
+            LecturerStaff.objects.update_or_create(
+                user=admin_officer.user,
+                defaults={
+                    "staff_id": admin_officer.staff_id,
+                    "full_name": admin_officer.full_name,
+                    "department": admin_officer.lecturer_department,
+                    "email": admin_officer.email,
+                },
+            )
+        else:
+            if hasattr(admin_officer.user, "lecturer_profile"):
+                lec_profile = admin_officer.user.lecturer_profile
+                if not lec_profile.assigned_courses.exists():
+                    lec_profile.delete()
+
+        return admin_officer
 
 
 class LoginSerializer(serializers.Serializer):
