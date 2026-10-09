@@ -715,6 +715,64 @@ def get_dashboard_statcards(user):
     active_semester = Semester.objects.filter(is_active=True).first() or Semester.objects.first()
     active_semester_id = active_semester.id if active_semester else None
 
+    # Dedicated Exam Officer Dashboard Statcards
+    if admin_prof and getattr(admin_prof, "is_exam_officer", False):
+        from scheduling.models import ExamSitting
+        from accounts.models import LecturerStaff
+        from accounts.permissions import get_user_scope_departments
+        from django.db.models import Sum
+
+        dept_qs = get_user_scope_departments(user)
+        sittings_qs = ExamSitting.objects.filter(
+            Q(timetable_entry__course__owning_department__in=dept_qs)
+            | Q(timetable_entry__venue__owning_department__in=dept_qs)
+        )
+        if active_semester:
+            sittings_qs = sittings_qs.filter(timetable_entry__semester=active_semester)
+
+        total_sittings = sittings_qs.count()
+        total_candidates = sittings_qs.aggregate(total=Sum("registered_candidates_count"))["total"] or 0
+        total_invigilators = LecturerStaff.objects.filter(invigilated_exams__in=sittings_qs).distinct().count()
+        venues_used = Venue.objects.filter(timetable_entries__exam_sitting__in=sittings_qs).distinct().count()
+
+        return {
+            "role_level": role_level,
+            "cards": [
+                {
+                    "id": "exam_sittings",
+                    "title": "Scheduled Exam Sittings",
+                    "value": str(total_sittings),
+                    "unit": "Sittings",
+                    "badge": "Active" if total_sittings > 0 else "Pending",
+                    "badge_variant": "info" if total_sittings > 0 else "neutral",
+                },
+                {
+                    "id": "exam_candidates",
+                    "title": "Total Candidates",
+                    "value": f"{total_candidates:,}",
+                    "unit": "Registered Students",
+                    "badge": "Enrolled",
+                    "badge_variant": "success" if total_candidates > 0 else "neutral",
+                },
+                {
+                    "id": "assigned_invigilators",
+                    "title": "Assigned Invigilators",
+                    "value": str(total_invigilators),
+                    "unit": "Lecturers Assigned",
+                    "badge": "Invigilation",
+                    "badge_variant": "info" if total_invigilators > 0 else "warning",
+                },
+                {
+                    "id": "exam_venues",
+                    "title": "Exam Venues Utilized",
+                    "value": str(venues_used),
+                    "unit": "Venues",
+                    "badge": "Allocated",
+                    "badge_variant": "neutral",
+                },
+            ],
+        }
+
     if role_level == "system":
         active_venues = Venue.objects.filter(is_active=True).count()
         total_schools = School.objects.count()
@@ -1059,4 +1117,53 @@ def get_venue_capacity_deficit_analytics(user, semester_id=None):
         "overcrowding_percentage": overcrowd_pct,
         "case_aware_remark": remark,
         "status_variant": status_variant,
+    }
+
+
+def get_exam_analytics(user, semester_id=None):
+    """
+    Computes exam timetable analytics for Exam Officers and administrators within scope.
+    """
+    from scheduling.models import ExamSitting, Semester
+    from accounts.models import LecturerStaff
+    from accounts.permissions import get_user_scope_departments
+    from venues.models import Venue
+    from django.db.models import Sum, Q
+
+    dept_qs = get_user_scope_departments(user)
+    sittings_qs = ExamSitting.objects.filter(
+        Q(timetable_entry__course__owning_department__in=dept_qs)
+        | Q(timetable_entry__venue__owning_department__in=dept_qs)
+    )
+    if semester_id:
+        sittings_qs = sittings_qs.filter(timetable_entry__semester_id=semester_id)
+    else:
+        active_sem = Semester.objects.filter(is_active=True).first()
+        if active_sem:
+            sittings_qs = sittings_qs.filter(timetable_entry__semester=active_sem)
+
+    total_sittings = sittings_qs.count()
+    total_candidates = sittings_qs.aggregate(total=Sum("registered_candidates_count"))["total"] or 0
+    total_invigilators = LecturerStaff.objects.filter(invigilated_exams__in=sittings_qs).distinct().count()
+    venues_used = Venue.objects.filter(timetable_entries__exam_sitting__in=sittings_qs).distinct().count()
+
+    daily_sittings = {}
+    for es in sittings_qs.select_related("timetable_entry"):
+        d = es.timetable_entry.recurrence_start_date or (es.timetable_entry.created_at.date() if es.timetable_entry.created_at else None)
+        d_str = str(d) if d else "Unspecified"
+        if d_str not in daily_sittings:
+            daily_sittings[d_str] = {"date": d_str, "sittings": 0, "candidates": 0}
+        daily_sittings[d_str]["sittings"] += 1
+        daily_sittings[d_str]["candidates"] += (es.registered_candidates_count or 0)
+
+    daily_breakdown = sorted(daily_sittings.values(), key=lambda x: x["date"])
+
+    return {
+        "summary": {
+            "total_sittings": total_sittings,
+            "total_candidates": total_candidates,
+            "total_invigilators": total_invigilators,
+            "total_venues": venues_used,
+        },
+        "daily_breakdown": daily_breakdown,
     }

@@ -136,6 +136,11 @@ class AdminOfficer(models.Model):
     scope_school = models.ForeignKey(
         School, null=True, blank=True, on_delete=models.SET_NULL, related_name="admin_officers"
     )
+    is_lecturer = models.BooleanField(default=False)
+    lecturer_department = models.ForeignKey(
+        Department, null=True, blank=True, on_delete=models.SET_NULL, related_name="lecturer_admins"
+    )
+    is_exam_officer = models.BooleanField(default=False)
 
     def save(self, *args, **kwargs):
         if self.staff_id:

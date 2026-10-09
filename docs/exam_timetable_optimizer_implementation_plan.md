@@ -65,7 +65,7 @@ This is the central architectural difference.
 The optimizer is responsible for:
 
 1. determining when an exam is held;
-2. determining the examination type;
+2. determining the examination type(though this would be provided from the backend);
 3. determining compatible venues;
 4. determining whether an exam uses one venue or multiple venues;
 5. distributing students across compatible venues where required;
@@ -103,7 +103,7 @@ Semester
 └── exam_period_end
 ```
 
-The exact existing schema should be reused where possible.
+The exact existing schema should be reused where possible(there's an existing Semseter system).
 
 ### Required validation
 

@@ -309,3 +309,28 @@ class IsStudentRole(BasePermission):
 class IsLecturerRole(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated and request.user.role == "lecturer")
+
+
+def is_user_exam_officer(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and hasattr(user, "admin_profile")
+        and user.admin_profile.is_exam_officer
+    )
+
+
+class IsExamOfficerRole(BasePermission):
+    message = "Only Exam Officers may access this resource."
+
+    def has_permission(self, request, view):
+        return is_user_exam_officer(request.user)
+
+
+class IsNotExamOfficer(BasePermission):
+    message = "Exam Officers do not have permission to access regular lecture or user management operations."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return not is_user_exam_officer(request.user)
