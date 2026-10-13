@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AcademicSessionViewSet,
     ExamSittingViewSet,
+    ExamOptimizerViewSet,
     LectureSessionViewSet,
     SemesterViewSet,
     TimetableEntryViewSet,
@@ -17,6 +18,7 @@ router.register(r"entries", TimetableEntryViewSet, basename="timetable-entry")
 router.register(r"sessions", LectureSessionViewSet, basename="lecture-session")
 router.register(r"exam-sittings", ExamSittingViewSet, basename="exam-sitting")
 router.register(r"generate", TimetableGenerationViewSet, basename="timetable-generate")
+router.register(r"exam-optimizer", ExamOptimizerViewSet, basename="exam-optimizer")
 
 urlpatterns = [
     path("", include(router.urls)),
