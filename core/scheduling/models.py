@@ -206,6 +206,36 @@ class ExamSitting(models.Model):
         return f"ExamSitting for {self.timetable_entry.title} ({self.registered_candidates_count} candidates)"
 
 
+class ExamOptimizerRun(models.Model):
+    """Published snapshot from the exam specific calendar and venue optimizer."""
+    class ScopeType(models.TextChoices):
+        SCHOOL = "school", "School"
+        FACULTY = "faculty", "Faculty"
+        DEPARTMENT = "department", "Department"
+
+    semester = models.ForeignKey(Semester, on_delete=models.CASCADE, related_name="exam_optimizer_runs")
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        APPROVED = "approved", "Approved"
+        PUBLISHED = "published", "Published"
+
+    scope_type = models.CharField(max_length=20, choices=ScopeType.choices)
+    scope_id = models.PositiveIntegerField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    events = models.JSONField(default=list, blank=True)
+    diagnostics = models.JSONField(default=dict, blank=True)
+    metrics = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name="exam_optimizer_runs")
+    approved_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="approved_exam_optimizer_runs")
+    published_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="published_exam_optimizer_runs")
+    approved_at = models.DateTimeField(null=True, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
 class GenerationScopePermission(models.Model):
     """
     Controls decentralized timetable generation and exam scheduling rights within a School.
@@ -339,4 +369,3 @@ class TimetableGenerationRun(models.Model):
 
     def __str__(self):
         return f"GenerationRun #{self.id} [{self.scope_type}:{self.scope_name}] ({self.status} - {self.result_status})"
-

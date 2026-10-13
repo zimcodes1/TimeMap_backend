@@ -411,9 +411,9 @@ class AdminProfileSerializer(serializers.ModelSerializer):
 
         # Exam Officer Validation
         is_exam_officer = attrs.get("is_exam_officer") if "is_exam_officer" in attrs else (instance.is_exam_officer if instance else False)
-        if is_exam_officer and target_level not in ["department", "faculty", "school"]:
+        if is_exam_officer and target_level not in ["department", "faculty"]:
             raise serializers.ValidationError({
-                "is_exam_officer": "Exam officers must be assigned to a department, faculty, or school."
+                "is_exam_officer": "Exam officers can only be assigned to a department or faculty. School-level exam management remains with the school administrator."
             })
 
         return attrs
@@ -609,4 +609,3 @@ class StudentRegistrationSerializer(serializers.Serializer):
                 **validated_data
             )
         return student
-

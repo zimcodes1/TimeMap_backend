@@ -7,6 +7,7 @@ from accounts.permissions import (
     get_user_scope_faculties,
     get_user_scope_schools,
 )
+from accounts.models import AdminOfficer
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils import timezone
@@ -20,6 +21,7 @@ import datetime
 from .models import (
     AcademicSession,
     ExamSitting,
+    ExamOptimizerRun,
     FacultyExamPeriod,
     GenerationScopePermission,
     LectureSession,
@@ -384,6 +386,17 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(entry_type__in=[t.strip() for t in entry_type_param.split(",")])
             else:
                 qs = qs.filter(entry_type=entry_type_param)
+        if entry_type_param and "exam" in entry_type_param.split(","):
+            profile = getattr(user, "admin_profile", None)
+            if not profile or not profile.is_exam_officer:
+                if profile and profile.level == "department" and profile.scope_department_id:
+                    has_officer = AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_department_id=profile.scope_department_id).exists()
+                    if has_officer: return qs.none()
+                elif profile and profile.level == "faculty" and profile.scope_faculty_id:
+                    has_officer = AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_faculty_id=profile.scope_faculty_id).exists()
+                    if has_officer: return qs.none()
+                else:
+                    return qs.none()
         exclude_entry_type = self.request.query_params.get("exclude_entry_type")
         if exclude_entry_type:
             qs = qs.exclude(entry_type=exclude_entry_type)
@@ -392,6 +405,16 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
         if not include_pending:
             qs = qs.exclude(status=TimetableEntry.Status.PENDING_APPROVAL)
 
+        profile = getattr(user, "admin_profile", None)
+        if not profile or not (profile.is_exam_officer and profile.level in ["department", "faculty"]):
+            if profile and profile.level == "department" and profile.scope_department_id:
+                if AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_department_id=profile.scope_department_id).exists():
+                    qs = qs.exclude(entry_type=TimetableEntry.EntryType.EXAM)
+            elif profile and profile.level == "faculty" and profile.scope_faculty_id:
+                if AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_faculty_id=profile.scope_faculty_id).exists():
+                    qs = qs.exclude(entry_type=TimetableEntry.EntryType.EXAM)
+            else:
+                qs = qs.exclude(entry_type=TimetableEntry.EntryType.EXAM)
         return qs.distinct()
 
     def get_permissions(self):
@@ -547,10 +570,28 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(timetable_entry__entry_type__in=[t.strip() for t in entry_type_param.split(",")])
             else:
                 qs = qs.filter(timetable_entry__entry_type=entry_type_param)
+            if "exam" in [part.strip() for part in entry_type_param.split(",")]:
+                profile = getattr(user, "admin_profile", None)
+                if not profile or not profile.is_exam_officer:
+                    if profile and profile.level == "department" and profile.scope_department_id:
+                        if AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_department_id=profile.scope_department_id).exists(): return qs.none()
+                    elif profile and profile.level == "faculty" and profile.scope_faculty_id:
+                        if AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_faculty_id=profile.scope_faculty_id).exists(): return qs.none()
+                    else: return qs.none()
         exclude_entry_type = self.request.query_params.get("exclude_entry_type")
         if exclude_entry_type:
             qs = qs.exclude(timetable_entry__entry_type=exclude_entry_type)
 
+        profile = getattr(user, "admin_profile", None)
+        if not profile or not (profile.is_exam_officer and profile.level in ["department", "faculty"]):
+            if profile and profile.level == "department" and profile.scope_department_id:
+                if AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_department_id=profile.scope_department_id).exists():
+                    qs = qs.exclude(timetable_entry__entry_type=TimetableEntry.EntryType.EXAM)
+            elif profile and profile.level == "faculty" and profile.scope_faculty_id:
+                if AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_faculty_id=profile.scope_faculty_id).exists():
+                    qs = qs.exclude(timetable_entry__entry_type=TimetableEntry.EntryType.EXAM)
+            else:
+                qs = qs.exclude(timetable_entry__entry_type=TimetableEntry.EntryType.EXAM)
         return qs.order_by("session_date", "session_start_time")
 
     def get_permissions(self):
@@ -893,6 +934,171 @@ def infer_optimizer_config_for_scope(
     )
 
 
+class ExamOptimizerViewSet(viewsets.ViewSet):
+    """Exam officer interface for running and reading the dedicated exam optimizer."""
+    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+
+    def _can_access(self, user, semester, scope_type, scope_id, manage=False):
+        from hierarchy.models import Department, Faculty
+        try: scope_id = int(scope_id)
+        except (TypeError, ValueError): return False
+        profile = getattr(user, "admin_profile", None)
+        if user.is_superuser or (user.is_staff and not profile): return True
+        if not profile or user.role != "admin": return False
+        if scope_type == "school":
+            return profile.level == "school" and profile.scope_school_id == scope_id and profile.scope_school_id == semester.session.school_id
+        if scope_type == "department":
+            department = Department.objects.filter(pk=scope_id, faculty__school=semester.session.school).first()
+            if not department: return False
+            if profile.level == "school": return profile.scope_school_id == semester.session.school_id
+            assigned_officer = AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_department=department).exists()
+            in_scope = profile.level == "department" and profile.scope_department_id == department.id
+            fallback = not assigned_officer and in_scope
+        elif scope_type == "faculty":
+            faculty = Faculty.objects.filter(pk=scope_id, school=semester.session.school).first()
+            if not faculty: return False
+            if profile.level == "school": return profile.scope_school_id == semester.session.school_id
+            assigned_officer = AdminOfficer.objects.filter(is_exam_officer=True, user__is_active=True, scope_faculty=faculty).exists()
+            in_scope = profile.level == "faculty" and profile.scope_faculty_id == faculty.id
+            fallback = not assigned_officer and in_scope
+        else:
+            return False  # School officers manage exam policy, not the timetable display.
+        officer = bool(profile.is_exam_officer and ((profile.level == "department" and profile.scope_department_id == scope_id) if scope_type == "department" else (profile.level == "faculty" and profile.scope_faculty_id == scope_id)))
+        return officer or fallback
+
+    @action(detail=False, methods=["get"], url_path="access")
+    def access(self, request):
+        semester = Semester.objects.filter(pk=request.query_params.get("semester")).select_related("session__school").first()
+        scope_type, scope_id = request.query_params.get("scope_type"), request.query_params.get("scope_id")
+        if not semester or not scope_type or not scope_id:
+            return Response({"detail": "semester, scope_type and scope_id are required."}, status=400)
+        allowed = self._can_access(request.user, semester, scope_type, scope_id)
+        profile = getattr(request.user, "admin_profile", None)
+        can_view = allowed and not (profile and profile.level == "school") and scope_type != "school"
+        return Response({"can_view": can_view, "can_optimize": allowed})
+
+    @action(detail=False, methods=["get"], url_path="timetable")
+    def timetable(self, request):
+        semester = Semester.objects.filter(pk=request.query_params.get("semester")).select_related("session__school").first()
+        scope_type, scope_id = request.query_params.get("scope_type"), request.query_params.get("scope_id")
+        if not semester or not scope_type or not scope_id: return Response({"detail": "semester, scope_type and scope_id are required."}, status=400)
+        profile = getattr(request.user, "admin_profile", None)
+        if (profile and profile.level == "school") or scope_type == "school" or not self._can_access(request.user, semester, scope_type, scope_id): return Response({"detail": "Only the assigned faculty or department exam officer, or its unassigned scope administrator, can view the published timetable."}, status=403)
+        from hierarchy.models import Department
+        scope_candidates = [(scope_type, int(scope_id))]
+        if scope_type == "department":
+            department = Department.objects.select_related("faculty").get(pk=scope_id)
+            scope_candidates.extend([("faculty", department.faculty_id), ("school", semester.session.school_id)])
+        elif scope_type == "faculty":
+            scope_candidates.append(("school", semester.session.school_id))
+        run = None
+        for candidate_type, candidate_id in scope_candidates:
+            run = ExamOptimizerRun.objects.filter(semester=semester, scope_type=candidate_type, scope_id=candidate_id, status=ExamOptimizerRun.Status.PUBLISHED).first()
+            if run: break
+        events = run.events if run else []
+        if run and run.scope_type != scope_type:
+            if scope_type == "department":
+                department = Department.objects.get(pk=scope_id)
+                events = [event for event in events if event.get("department_id") in (None, department.id) or event.get("program_id") and Department.objects.filter(pk=department.id, programs__id=event.get("program_id")).exists()]
+            elif scope_type == "faculty":
+                department_ids = set(Department.objects.filter(faculty_id=scope_id).values_list("id", flat=True))
+                events = [event for event in events if event.get("department_id") is None or event.get("department_id") in department_ids]
+        return Response({"run_id": run.id if run else None, "source_scope_type": run.scope_type if run else None, "source_scope_id": run.scope_id if run else None, "events": events, "diagnostics": run.diagnostics if run else {}})
+
+    @action(detail=False, methods=["post"], url_path="optimize")
+    def optimize(self, request):
+        semester = Semester.objects.filter(pk=request.data.get("semester_id")).select_related("session__school").first()
+        scope_type, scope_id = request.data.get("scope_type"), request.data.get("scope_id")
+        if not semester or not scope_type or not scope_id: return Response({"detail": "semester_id, scope_type and scope_id are required."}, status=400)
+        if not self._can_access(request.user, semester, scope_type, scope_id, manage=True): return Response({"detail": "Only the assigned exam officer or authorized scope administrator can run the exam optimizer."}, status=403)
+        from .exam_optimizer import generate_exam_timetable
+        from hierarchy.models import Department, Faculty
+        started_at = datetime.datetime.now(datetime.timezone.utc)
+        try: events, diagnostics = generate_exam_timetable(semester, scope_type, int(scope_id))
+        except (ValueError, Department.DoesNotExist, Faculty.DoesNotExist) as exc: return Response({"detail": str(exc)}, status=400)
+        if not diagnostics.get("validation", {}).get("valid", False):
+            return Response({"detail": "The optimizer output did not pass independent validation.", "diagnostics": diagnostics}, status=422)
+        elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
+        allocations = [allocation for event in events for allocation in event["venues"]]
+        utilization = [allocation["students"] / (allocation["capacity"] * max(1, allocation["turns"])) for allocation in allocations if allocation.get("capacity")]
+        errors = diagnostics.get("validation", {}).get("errors", [])
+        metrics = {
+            "courses_total": len(events) + len(diagnostics.get("unscheduled", [])),
+            "courses_scheduled": len(events),
+            "courses_unscheduled": len(diagnostics.get("unscheduled", [])),
+            "hard_conflicts": len(errors),
+            "student_conflicts": sum("Student conflict" in item.get("reason", "") for item in errors),
+            "venue_conflicts": sum("Venue conflict" in item.get("reason", "") for item in errors),
+            "venue_allocations": len(allocations),
+            "venues_used": len({allocation["venue_id"] for allocation in allocations}),
+            "average_venue_utilization": round(sum(utilization) / len(utilization), 4) if utilization else 0,
+            "active_exam_days": len({event["date"] for event in events}),
+            "joined_sessions": diagnostics.get("joined_sessions", 0),
+            "cbt_turns": sum(allocation.get("turns", 0) for event in events if event.get("exam_type") == "cbt" for allocation in event["venues"]),
+            "maximum_exams_per_student_per_week": diagnostics.get("student_workload", {}).get("maximum_exams_per_student_per_week", 0),
+            "students_over_three_exams_per_week": diagnostics.get("student_workload", {}).get("students_over_three_exams_per_week", 0),
+            "average_exams_per_student_week": diagnostics.get("student_workload", {}).get("average_exams_per_student_week", 0),
+            "maximum_exams_per_student_per_day": diagnostics.get("student_workload", {}).get("maximum_exams_per_student_per_day", 0),
+            "runtime_seconds": round(elapsed, 3),
+            "result_status": "feasible" if not diagnostics.get("unscheduled") else "best_available",
+        }
+        run = ExamOptimizerRun.objects.create(semester=semester, scope_type=scope_type, scope_id=scope_id, events=events, diagnostics=diagnostics, metrics=metrics, created_by=request.user)
+        return Response(self._serialize_run(run), status=201)
+
+    @staticmethod
+    def _serialize_run(run):
+        return {"run_id": str(run.id), "semester_id": run.semester_id, "scope_type": run.scope_type, "scope_id": run.scope_id, "status": run.status, "events": run.events, "diagnostics": run.diagnostics, "metrics": run.metrics, "created_at": run.created_at, "approved_at": run.approved_at, "approved_by": run.approved_by_id, "published_at": run.published_at, "published_by": run.published_by_id}
+
+    def _get_run(self, request, run_id):
+        run = ExamOptimizerRun.objects.select_related("semester__session__school").filter(pk=run_id).first()
+        if not run: return None, Response({"detail": "Exam optimizer run not found."}, status=404)
+        if not self._can_access(request.user, run.semester, run.scope_type, run.scope_id):
+            return None, Response({"detail": "You do not have access to this exam optimizer run."}, status=403)
+        return run, None
+
+    @action(detail=False, methods=["get"], url_path="runs")
+    def runs(self, request):
+        qs = ExamOptimizerRun.objects.select_related("semester__session__school")
+        semester_id = request.query_params.get("semester")
+        if semester_id: qs = qs.filter(semester_id=semester_id)
+        profile = getattr(request.user, "admin_profile", None)
+        if not (request.user.is_superuser or (request.user.is_staff and not profile)):
+            if profile and profile.level == "school": qs = qs.filter(semester__session__school_id=profile.scope_school_id)
+            elif profile and profile.level == "faculty": qs = qs.filter(scope_type="faculty", scope_id=profile.scope_faculty_id)
+            elif profile and profile.level == "department": qs = qs.filter(scope_type="department", scope_id=profile.scope_department_id)
+            else: return Response({"detail": "Administrative exam access is required."}, status=403)
+        return Response([self._serialize_run(run) for run in qs[:50]])
+
+    @action(detail=False, methods=["get"], url_path=r"runs/(?P<run_id>[^/.]+)")
+    def run_detail(self, request, run_id=None):
+        run, error = self._get_run(request, run_id)
+        return error or Response(self._serialize_run(run))
+
+    @action(detail=False, methods=["post"], url_path=r"runs/(?P<run_id>[^/.]+)/approve")
+    def approve_run(self, request, run_id=None):
+        run, error = self._get_run(request, run_id)
+        if error: return error
+        if run.status == ExamOptimizerRun.Status.PUBLISHED: return Response({"detail": "Published runs cannot be re-approved."}, status=400)
+        run.status = ExamOptimizerRun.Status.APPROVED
+        run.approved_by = request.user
+        run.approved_at = timezone.now()
+        run.save(update_fields=["status", "approved_by", "approved_at"])
+        return Response(self._serialize_run(run))
+
+    @action(detail=False, methods=["post"], url_path=r"runs/(?P<run_id>[^/.]+)/publish")
+    def publish_run(self, request, run_id=None):
+        run, error = self._get_run(request, run_id)
+        if error: return error
+        if run.status != ExamOptimizerRun.Status.APPROVED: return Response({"detail": "Approve the inspected exam run before publishing."}, status=400)
+        now = timezone.now()
+        ExamOptimizerRun.objects.filter(semester=run.semester, scope_type=run.scope_type, scope_id=run.scope_id, status=ExamOptimizerRun.Status.PUBLISHED).exclude(pk=run.pk).update(status=ExamOptimizerRun.Status.APPROVED)
+        run.status = ExamOptimizerRun.Status.PUBLISHED
+        run.published_by = request.user
+        run.published_at = now
+        run.save(update_fields=["status", "published_by", "published_at"])
+        return Response(self._serialize_run(run))
+
+
 class TimetableGenerationViewSet(viewsets.ViewSet):
     """
     Automated timetable generation and discrepancy preview engine using Genetic Algorithm.
@@ -1141,4 +1347,3 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
 
         json_data = serialize_problem_to_dict(problem)
         return Response(json_data, status=status.HTTP_200_OK)
-
