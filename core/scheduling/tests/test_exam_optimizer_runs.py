@@ -84,14 +84,14 @@ class ExamOptimizerRunWorkflowTests(APITestCase):
         self.assertEqual(timetable.status_code, 200)
         self.assertEqual(len(timetable.data["events"]), 1)
 
-    def test_school_admin_has_school_generator_access_but_not_live_display_access(self):
+    def test_school_admin_has_generator_and_timetable_view_access(self):
         self.client.force_authenticate(self.school_admin_user)
         access = self.client.get("/api/scheduling/exam-optimizer/access/", {
             "semester": self.semester.id, "scope_type": "school", "scope_id": self.school.id,
         })
         self.assertEqual(access.status_code, 200)
         self.assertTrue(access.data["can_optimize"])
-        self.assertFalse(access.data["can_view"])
+        self.assertTrue(access.data["can_view"])
 
         generated = self.client.post("/api/scheduling/exam-optimizer/optimize/", {
             "semester_id": self.semester.id, "scope_type": "school", "scope_id": self.school.id,
@@ -100,7 +100,7 @@ class ExamOptimizerRunWorkflowTests(APITestCase):
         display = self.client.get("/api/scheduling/exam-optimizer/timetable/", {
             "semester": self.semester.id, "scope_type": "school", "scope_id": self.school.id,
         })
-        self.assertEqual(display.status_code, 403)
+        self.assertEqual(display.status_code, 200)
 
     def test_faculty_admin_can_generate_when_no_faculty_exam_officer_is_assigned(self):
         self.client.force_authenticate(self.faculty_admin_user)
