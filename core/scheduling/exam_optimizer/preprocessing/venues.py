@@ -27,7 +27,11 @@ def resolve_scope_venues(scope_type: str, scope_id: int) -> List[Venue]:
             | Q(owning_level="school", owning_school=faculty.school)
         )
     elif scope_type == "school":
-        qs = qs.filter(owning_school_id=scope_id)
+        qs = qs.filter(
+            Q(owning_school_id=scope_id)
+            | Q(owning_faculty__school_id=scope_id)
+            | Q(owning_department__faculty__school_id=scope_id)
+        )
     else:
         raise ValueError(f"Unknown examination scope type: {scope_type}")
 
