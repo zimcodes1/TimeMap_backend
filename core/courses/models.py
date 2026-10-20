@@ -26,7 +26,7 @@ class Course(models.Model):
         CBT = "cbt", "CBT"
         LAB_PRACTICAL = "lab_practical", "Lab practical"
 
-    exam_type = models.CharField(max_length=20, choices=ExamType.choices, default=ExamType.WRITTEN)
+    exam_type = models.CharField(max_length=20, choices=ExamType.choices, default=ExamType.CBT)
     exam_duration_minutes = models.PositiveIntegerField(null=True, blank=True)
     exam_duration_per_student_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
 

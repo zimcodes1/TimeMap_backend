@@ -315,6 +315,24 @@ class AdminProfileSerializer(serializers.ModelSerializer):
         data["lecturer_department_id"] = instance.lecturer_department_id
         data["lecturer_department_name"] = instance.lecturer_department.name if instance.lecturer_department else None
         data["is_exam_officer"] = instance.is_exam_officer
+
+        # Check whether an active exam officer exists for this scope
+        has_scope_exam_officer = False
+        if instance.is_exam_officer:
+            has_scope_exam_officer = True
+        elif instance.level == "department" and instance.scope_department_id:
+            has_scope_exam_officer = AdminOfficer.objects.filter(
+                is_exam_officer=True, user__is_active=True, scope_department_id=instance.scope_department_id
+            ).exists()
+        elif instance.level == "faculty" and instance.scope_faculty_id:
+            has_scope_exam_officer = AdminOfficer.objects.filter(
+                is_exam_officer=True, user__is_active=True, scope_faculty_id=instance.scope_faculty_id
+            ).exists()
+        elif instance.level == "school" and instance.scope_school_id:
+            has_scope_exam_officer = AdminOfficer.objects.filter(
+                is_exam_officer=True, user__is_active=True, scope_school_id=instance.scope_school_id
+            ).exists()
+        data["has_scope_exam_officer"] = has_scope_exam_officer
         return data
 
     def validate(self, attrs):
