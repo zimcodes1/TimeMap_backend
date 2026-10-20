@@ -28,7 +28,13 @@ class CanManageCourse(BasePermission):
             return True
 
         if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
-            level = user.admin_profile.level
+            admin_prof = user.admin_profile
+            if getattr(admin_prof, "is_exam_officer", False):
+                if request.method in ["POST", "DELETE"]:
+                    return False
+                return True
+
+            level = admin_prof.level
             if level in ["university", "system"]:
                 return False  # System level: edit none, delete none
             return level in ["school", "faculty", "department"]
@@ -48,6 +54,30 @@ class CanManageCourse(BasePermission):
         if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
             level = admin_prof.level
+
+            if getattr(admin_prof, "is_exam_officer", False):
+                if request.method not in ["PATCH", "PUT"]:
+                    return False
+                # Exam officers can only edit courses that are within and from their scope
+                if level == "department":
+                    return bool(
+                        obj.owning_level == Course.OwningLevel.DEPARTMENT
+                        and admin_prof.scope_department_id
+                        and obj.owning_department_id == admin_prof.scope_department_id
+                    )
+                if level == "faculty":
+                    return bool(
+                        obj.owning_level == Course.OwningLevel.FACULTY
+                        and admin_prof.scope_faculty_id
+                        and obj.owning_faculty_id == admin_prof.scope_faculty_id
+                    )
+                if level == "school":
+                    return bool(
+                        obj.owning_level == Course.OwningLevel.SCHOOL
+                        and admin_prof.scope_school_id
+                        and obj.owning_school_id == admin_prof.scope_school_id
+                    )
+                return False
 
             if level in ["university", "system"]:
                 return False  # Edit none, delete none

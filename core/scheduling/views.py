@@ -1076,10 +1076,46 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
 
     @staticmethod
     def _serialize_run(run):
-        return {"run_id": str(run.id), "semester_id": run.semester_id, "scope_type": run.scope_type, "scope_id": run.scope_id, "status": run.status, "events": run.events, "diagnostics": run.diagnostics, "metrics": run.metrics, "created_at": run.created_at, "approved_at": run.approved_at, "approved_by": run.approved_by_id, "published_at": run.published_at, "published_by": run.published_by_id}
+        scope_name = ""
+        from hierarchy.models import Department, Faculty, School
+        if run.scope_type == "department":
+            dept = Department.objects.filter(pk=run.scope_id).first()
+            scope_name = dept.name if dept else f"Department #{run.scope_id}"
+        elif run.scope_type == "faculty":
+            fac = Faculty.objects.filter(pk=run.scope_id).first()
+            scope_name = fac.name if fac else f"Faculty #{run.scope_id}"
+        elif run.scope_type == "school":
+            sch = School.objects.filter(pk=run.scope_id).first() or getattr(run.semester.session, "school", None)
+            scope_name = sch.name if sch else f"School #{run.scope_id}"
+
+        def _user_name(u):
+            if not u: return None
+            name = f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip()
+            return name or getattr(u, "name", "") or getattr(u, "identifier", "")
+
+        return {
+            "run_id": str(run.id),
+            "semester_id": run.semester_id,
+            "scope_type": run.scope_type,
+            "scope_id": run.scope_id,
+            "scope_name": scope_name,
+            "status": run.status,
+            "events": run.events,
+            "diagnostics": run.diagnostics,
+            "metrics": run.metrics,
+            "created_at": run.created_at,
+            "created_by_id": run.created_by_id,
+            "created_by_name": _user_name(run.created_by),
+            "approved_at": run.approved_at,
+            "approved_by": run.approved_by_id,
+            "approved_by_name": _user_name(run.approved_by),
+            "published_at": run.published_at,
+            "published_by": run.published_by_id,
+            "published_by_name": _user_name(run.published_by),
+        }
 
     def _get_run(self, request, run_id):
-        run = ExamOptimizerRun.objects.select_related("semester__session__school").filter(pk=run_id).first()
+        run = ExamOptimizerRun.objects.select_related("semester__session__school", "created_by", "approved_by", "published_by").filter(pk=run_id).first()
         if not run: return None, Response({"detail": "Exam optimizer run not found."}, status=404)
         if not self._can_access(request.user, run.semester, run.scope_type, run.scope_id):
             return None, Response({"detail": "You do not have access to this exam optimizer run."}, status=403)
@@ -1087,7 +1123,7 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="runs")
     def runs(self, request):
-        qs = ExamOptimizerRun.objects.select_related("semester__session__school")
+        qs = ExamOptimizerRun.objects.select_related("semester__session__school", "created_by", "approved_by", "published_by")
         semester_id = request.query_params.get("semester")
         if semester_id: qs = qs.filter(semester_id=semester_id)
         profile = getattr(request.user, "admin_profile", None)

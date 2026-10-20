@@ -134,6 +134,44 @@ class CourseViewSet(viewsets.ModelViewSet):
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response({"detail": "Only students have a visible course list."}, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(summary="Get current user exam configuration access status")
+    @action(detail=False, methods=["get"], url_path="exam-settings-access")
+    def exam_settings_access(self, request):
+        from accounts.models import AdminOfficer
+
+        user = request.user
+        admin_prof = getattr(user, "admin_profile", None)
+        if not admin_prof:
+            return Response({
+                "is_exam_officer": False,
+                "has_scope_exam_officer": False,
+                "can_access_exam_tab": False,
+            })
+
+        is_eo = getattr(admin_prof, "is_exam_officer", False)
+        has_officer = False
+        if is_eo:
+            has_officer = True
+        elif admin_prof.level == "department" and admin_prof.scope_department_id:
+            has_officer = AdminOfficer.objects.filter(
+                is_exam_officer=True, user__is_active=True, scope_department_id=admin_prof.scope_department_id
+            ).exists()
+        elif admin_prof.level == "faculty" and admin_prof.scope_faculty_id:
+            has_officer = AdminOfficer.objects.filter(
+                is_exam_officer=True, user__is_active=True, scope_faculty_id=admin_prof.scope_faculty_id
+            ).exists()
+        elif admin_prof.level == "school" and admin_prof.scope_school_id:
+            has_officer = AdminOfficer.objects.filter(
+                is_exam_officer=True, user__is_active=True, scope_school_id=admin_prof.scope_school_id
+            ).exists()
+
+        can_access_exam_tab = is_eo or (not has_officer)
+        return Response({
+            "is_exam_officer": is_eo,
+            "has_scope_exam_officer": has_officer,
+            "can_access_exam_tab": can_access_exam_tab,
+        })
+
 
 class CourseAccessGrantViewSet(viewsets.ModelViewSet):
     serializer_class = CourseAccessGrantSerializer
