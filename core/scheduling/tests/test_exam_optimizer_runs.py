@@ -115,3 +115,35 @@ class ExamOptimizerRunWorkflowTests(APITestCase):
         }, format="json")
         self.assertEqual(generated.status_code, 201, generated.data)
         self.assertEqual(generated.data["metrics"]["courses_scheduled"], 1)
+
+    def test_export_exam_problem_json_and_csv(self):
+        self.client.force_authenticate(self.faculty_admin_user)
+
+        # 1. Test JSON export
+        res_json = self.client.post("/api/scheduling/exam-optimizer/export-problem/", {
+            "semester_id": self.semester.id,
+            "scope_type": "faculty",
+            "scope_id": self.faculty.id,
+            "format": "json",
+        }, format="json")
+        self.assertEqual(res_json.status_code, 200, res_json.data)
+        self.assertIn("metadata", res_json.data)
+        self.assertIn("hierarchy", res_json.data)
+        self.assertIn("all_events", res_json.data)
+        self.assertIn("venues", res_json.data)
+        self.assertIn("candidate_windows", res_json.data)
+        self.assertIn("student_conflict_graph", res_json.data)
+
+        # 2. Test CSV export
+        res_csv = self.client.post("/api/scheduling/exam-optimizer/export-problem/", {
+            "semester_id": self.semester.id,
+            "scope_type": "faculty",
+            "scope_id": self.faculty.id,
+            "format": "csv",
+        }, format="json")
+        self.assertEqual(res_csv.status_code, 200)
+        self.assertEqual(res_csv["Content-Type"], "text/csv")
+        csv_text = res_csv.content.decode("utf-8")
+        self.assertIn("Event ID,Course Code,Course Title", csv_text)
+        self.assertIn("CSC201", csv_text)
+

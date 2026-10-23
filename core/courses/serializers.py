@@ -17,6 +17,7 @@ class CourseSerializer(serializers.ModelSerializer):
     registration_count = serializers.SerializerMethodField()
     is_granted_to_scope = serializers.BooleanField(read_only=True, default=False)
     can_edit_exam_settings = serializers.BooleanField(read_only=True, default=False)
+    applicable_program_ids = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -48,8 +49,16 @@ class CourseSerializer(serializers.ModelSerializer):
             "registration_count",
             "is_granted_to_scope",
             "can_edit_exam_settings",
+            "applicable_program_ids",
         )
-        read_only_fields = ("id", "is_granted_to_scope", "can_edit_exam_settings")
+        read_only_fields = ("id", "is_granted_to_scope", "can_edit_exam_settings", "applicable_program_ids")
+
+    def get_applicable_program_ids(self, obj):
+        try:
+            from .services import get_course_attributed_programs
+            return list(get_course_attributed_programs(obj))
+        except Exception:
+            return []
 
     def get_registration_count(self, obj):
         if hasattr(obj, "_cached_registration_count"):

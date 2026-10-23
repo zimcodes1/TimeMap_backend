@@ -1,4 +1,4 @@
-from accounts.models import AdminOfficer, Student, User
+from accounts.models import AdminOfficer, Student, User, LecturerStaff
 from courses.models import Course, CourseAccessGrant, CourseRegistration
 from courses.services import get_visible_courses_for_student
 from hierarchy.models import Department, Faculty, School
@@ -59,3 +59,72 @@ class CourseAndVisibilityTests(APITestCase):
         res = self.client.post(url, payload, format="json")
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, msg=f"Error response: {res.data}")
         self.assertEqual(CourseRegistration.objects.count(), 1)
+
+    def test_filter_courses_by_lecturer_param(self):
+        # Create a lecturer
+        lec_user = User.objects.create_user(identifier="LEC1", password="password", role=User.Role.LECTURER, requires_password_reset=False)
+        lec = LecturerStaff.objects.create(user=lec_user, staff_id="LEC1", full_name="Lecturer 1", department=self.dept2)
+
+        # Assign lecturer to mth_course only
+        self.mth_course.lecturers.add(lec)
+
+        # Admin logs in and queries all courses
+        self.client.force_authenticate(user=self.admin_user)
+        res_all = self.client.get("/api/courses/courses/")
+        self.assertEqual(res_all.status_code, status.HTTP_200_OK)
+        # Without param, admin sees all courses in dept2
+        self.assertIn(self.mth_course.id, [c["id"] for c in res_all.data])
+
+        # Query with ?lecturer=<lec.id>
+        res_filtered = self.client.get(f"/api/courses/courses/?lecturer={lec.id}")
+        self.assertEqual(res_filtered.status_code, status.HTTP_200_OK)
+        filtered_ids = [c["id"] for c in res_filtered.data]
+        self.assertIn(self.mth_course.id, filtered_ids)
+        self.assertNotIn(self.cs_course.id, filtered_ids)
+
+    def test_courses_visibility_for_lecturer_user(self):
+        lec_user = User.objects.create_user(identifier="LEC2", password="password", role=User.Role.LECTURER, requires_password_reset=False)
+        lec = LecturerStaff.objects.create(user=lec_user, staff_id="LEC2", full_name="Lecturer 2", department=self.dept2)
+        self.mth_course.lecturers.add(lec)
+
+        self.client.force_authenticate(user=lec_user)
+        res = self.client.get("/api/courses/courses/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        returned_ids = [c["id"] for c in res.data]
+        self.assertEqual(returned_ids, [self.mth_course.id])
+
+    def test_department_admin_sees_granted_and_faculty_and_general_courses(self):
+        # Admin is department officer in dept2 (Math)
+        # Create a faculty-level course under faculty2
+        faculty_course = Course.objects.create(
+            code="SCI101",
+            title="Integrated Science",
+            level=100,
+            owning_level=Course.OwningLevel.FACULTY,
+            owning_faculty=self.faculty2,
+        )
+
+        # Create access grant from dept1 (CS) to dept2 (Math) for cs_course
+        CourseAccessGrant.objects.create(
+            course=self.cs_course,
+            granted_to_level=CourseAccessGrant.GrantedToLevel.DEPARTMENT,
+            granted_to_department=self.dept2,
+            direction=CourseAccessGrant.Direction.OFFERED,
+            status=CourseAccessGrant.Status.APPROVED,
+            initiated_by=self.admin,
+        )
+
+        self.client.force_authenticate(user=self.admin_user)
+        res = self.client.get("/api/courses/courses/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        course_ids = [c["id"] for c in res.data]
+
+        # dept2 owns mth_course
+        self.assertIn(self.mth_course.id, course_ids)
+        # dept2 is granted cs_course
+        self.assertIn(self.cs_course.id, course_ids)
+        # faculty2 owns faculty_course
+        self.assertIn(faculty_course.id, course_ids)
+        # general course
+        self.assertIn(self.general_course.id, course_ids)
+

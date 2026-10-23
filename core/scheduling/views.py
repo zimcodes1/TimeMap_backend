@@ -1163,6 +1163,47 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
         run.save(update_fields=["status", "published_by", "published_at"])
         return Response(self._serialize_run(run))
 
+    @action(detail=False, methods=["get", "post"], url_path="export-problem")
+    def export_problem(self, request):
+        if request.method.lower() == "post":
+            semester_id = request.data.get("semester_id")
+            scope_type = request.data.get("scope_type")
+            scope_id = request.data.get("scope_id")
+            export_format = request.data.get("format", "json").lower()
+        else:
+            semester_id = request.query_params.get("semester_id") or request.query_params.get("semester")
+            scope_type = request.query_params.get("scope_type", "school")
+            scope_id = request.query_params.get("scope_id")
+            export_format = request.query_params.get("format", "json").lower()
+
+        if not semester_id or not scope_type or not scope_id:
+            return Response({"detail": "semester_id, scope_type and scope_id are required."}, status=400)
+
+        semester = Semester.objects.filter(pk=semester_id).select_related("session__school").first()
+        if not semester:
+            return Response({"detail": "Semester not found."}, status=404)
+
+        if not self._can_access(request.user, semester, scope_type, scope_id):
+            return Response({"detail": "Only the assigned exam officer or authorized scope administrator can export the exam problem."}, status=403)
+
+        from .exam_optimizer.preprocessing.pipeline import build_exam_problem_from_db
+        from .exam_optimizer.export import serialize_exam_problem_to_dict, serialize_exam_problem_to_csv
+
+        try:
+            problem = build_exam_problem_from_db(semester, scope_type, int(scope_id))
+        except Exception as exc:
+            return Response({"detail": f"Failed to prepare exam scheduling data: {str(exc)}"}, status=400)
+
+        if export_format == "csv":
+            csv_content = serialize_exam_problem_to_csv(problem)
+            filename = f"exam_scheduling_problem_{scope_type}_{scope_id}_semester_{semester_id}.csv"
+            response = HttpResponse(csv_content, content_type="text/csv")
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
+            return response
+
+        data = serialize_exam_problem_to_dict(problem)
+        return Response(data, status=200)
+
 
 class TimetableGenerationViewSet(viewsets.ViewSet):
     """

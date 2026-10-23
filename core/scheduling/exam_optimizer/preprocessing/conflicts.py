@@ -38,24 +38,40 @@ def build_exam_conflict_graph(
     cohort_overlaps: Dict[Tuple[int, int], float] = {}
 
     course_list = list(courses)
+    from courses.services import get_course_attributed_programs
+
+    # Precompute attributed program cohorts per course: (program_id, course.level)
+    course_cohorts = {
+        c.id: {(pid, c.level) for pid in get_course_attributed_programs(c)}
+        for c in courses
+    }
+
     for i, course_a in enumerate(course_list):
         students_a = students_by_course.get(course_a.id, set())
-        if not students_a:
-            continue
+        cohorts_a = course_cohorts.get(course_a.id, set())
 
         for j in range(i + 1, len(course_list)):
             course_b = course_list[j]
             students_b = students_by_course.get(course_b.id, set())
-            if not students_b:
-                continue
+            cohorts_b = course_cohorts.get(course_b.id, set())
 
-            intersection = students_a.intersection(students_b)
-            if intersection:
+            intersection_students = students_a.intersection(students_b) if (students_a and students_b) else set()
+            intersection_cohorts = cohorts_a.intersection(cohorts_b) if (cohorts_a and cohorts_b) else set()
+
+            if intersection_students:
                 student_conflict_graph[course_a.id].add(course_b.id)
                 student_conflict_graph[course_b.id].add(course_a.id)
 
                 union_len = len(students_a.union(students_b))
-                jaccard = round(len(intersection) / union_len, 4) if union_len > 0 else 0.0
+                jaccard = round(len(intersection_students) / union_len, 4) if union_len > 0 else 0.0
+                cohort_overlaps[(course_a.id, course_b.id)] = jaccard
+                cohort_overlaps[(course_b.id, course_a.id)] = jaccard
+            elif intersection_cohorts:
+                student_conflict_graph[course_a.id].add(course_b.id)
+                student_conflict_graph[course_b.id].add(course_a.id)
+
+                union_cohorts_len = len(cohorts_a.union(cohorts_b))
+                jaccard = round(len(intersection_cohorts) / union_cohorts_len, 4) if union_cohorts_len > 0 else 0.0
                 cohort_overlaps[(course_a.id, course_b.id)] = jaccard
                 cohort_overlaps[(course_b.id, course_a.id)] = jaccard
 

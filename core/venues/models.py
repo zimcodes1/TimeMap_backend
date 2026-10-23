@@ -13,8 +13,10 @@ class Venue(models.Model):
     class VenueType(models.TextChoices):
         LECTURE_HALL = "lecture_hall", "Lecture Hall"
         LABORATORY = "laboratory", "Laboratory"
-        EXAM_HALL = "exam_hall", "Exam Hall"
+        AUDITORIUM = "auditorium", "Auditorium"
+        CBT_CENTER = "cbt_center", "CBT Exam Center"
         MULTIPURPOSE = "multipurpose", "Multipurpose"
+        EXAM_HALL = "exam_hall", "CBT Exam Center (Legacy)"
 
     class OwningLevel(models.TextChoices):
         DEPARTMENT = "department", "Department"
@@ -22,9 +24,11 @@ class Venue(models.Model):
         SCHOOL = "school", "School"
 
     name = models.CharField(max_length=255, unique=True)
+    code = models.CharField(max_length=50, blank=True, default="")
     venue_type = models.CharField(max_length=30, choices=VenueType.choices)
-    capacity = models.IntegerField()
+    capacity = models.IntegerField(default=0)
     exam_capacity = models.IntegerField(null=True, blank=True)
+    location = models.CharField(max_length=255, blank=True, default="")
     facilities = models.ManyToManyField(Facility, blank=True, related_name="venues")
 
     owning_level = models.CharField(max_length=20, choices=OwningLevel.choices)

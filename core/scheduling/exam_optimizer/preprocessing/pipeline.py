@@ -51,23 +51,52 @@ def build_exam_problem_from_db(
         raise ValueError(f"Unknown examination scope type: {scope_type}")
 
     # 2. Query scoped courses attached to this semester
-    courses_qs = Course.objects.filter(semester=semester).select_related(
+    courses_qs = Course.objects.filter(
+        Q(semester=semester) | Q(semester__isnull=True)
+    ).select_related(
         "owning_department__faculty",
         "owning_faculty",
+        "owning_school",
         "target_program",
     )
 
+    from courses.models import CourseAccessGrant
+
     if scope_type == "department":
-        courses_qs = courses_qs.filter(owning_department_id=scope_id)
-    elif scope_type == "faculty":
+        department = Department.objects.select_related("faculty__school").get(pk=scope_id)
+        granted_course_ids = list(
+            CourseAccessGrant.objects.filter(
+                status=CourseAccessGrant.Status.APPROVED,
+                granted_to_department_id=scope_id,
+            ).values_list("course_id", flat=True)
+        )
         courses_qs = courses_qs.filter(
-            Q(owning_faculty_id=scope_id) | Q(owning_department__faculty_id=scope_id)
+            Q(owning_department_id=scope_id)
+            | Q(id__in=granted_course_ids)
+            | Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty=department.faculty)
+            | Q(owning_level__in=[Course.OwningLevel.SCHOOL, Course.OwningLevel.GENERAL], owning_school=department.faculty.school)
+        )
+    elif scope_type == "faculty":
+        faculty = Faculty.objects.select_related("school").get(pk=scope_id)
+        granted_course_ids = list(
+            CourseAccessGrant.objects.filter(
+                status=CourseAccessGrant.Status.APPROVED,
+            ).filter(
+                Q(granted_to_faculty_id=scope_id) | Q(granted_to_department__faculty_id=scope_id)
+            ).values_list("course_id", flat=True)
+        )
+        courses_qs = courses_qs.filter(
+            Q(owning_faculty_id=scope_id)
+            | Q(owning_department__faculty_id=scope_id)
+            | Q(owning_level__in=[Course.OwningLevel.SCHOOL, Course.OwningLevel.GENERAL], owning_school=faculty.school)
+            | Q(id__in=granted_course_ids)
         )
     elif scope_type == "school":
         courses_qs = courses_qs.filter(
             Q(owning_school_id=scope_id)
             | Q(owning_faculty__school_id=scope_id)
             | Q(owning_department__faculty__school_id=scope_id)
+            | Q(owning_level=Course.OwningLevel.GENERAL)
         )
 
     courses: List[Course] = list(courses_qs.distinct())

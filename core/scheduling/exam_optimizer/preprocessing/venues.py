@@ -47,17 +47,23 @@ def filter_venues_by_exam_type(venues: List[Venue], exam_type: str) -> List[Venu
             continue
 
         if exam_type == Course.ExamType.CBT:
-            # Check for computer laboratory/facilities
-            if hasattr(v, "facilities") and v.facilities.filter(name__icontains="computer").exists():
-                filtered.append(v)
-            elif "cbt" in v.name.lower() or "computer" in v.name.lower():
+            # CBT exams are strictly scheduled to CBT Exam Centers only
+            # (computer labs, general laboratories, and lecture halls are not eligible)
+            if getattr(v, "venue_type", "") in [Venue.VenueType.CBT_CENTER, Venue.VenueType.EXAM_HALL]:
                 filtered.append(v)
         elif exam_type == Course.ExamType.LAB_PRACTICAL:
-            if getattr(v, "venue_type", "") == Venue.VenueType.LABORATORY:
+            # Lab practical exams are scheduled to laboratory venues
+            if getattr(v, "venue_type", "") in [Venue.VenueType.LABORATORY, "lab"]:
                 filtered.append(v)
         else:
-            # Written exams use any non-laboratory hall or classroom
-            if getattr(v, "venue_type", "") != Venue.VenueType.LABORATORY:
+            # Written exams use lecture halls, auditoriums, and multipurpose halls
+            # (strictly excluding laboratories and CBT exam centers)
+            if getattr(v, "venue_type", "") not in [
+                Venue.VenueType.LABORATORY,
+                "lab",
+                Venue.VenueType.CBT_CENTER,
+                Venue.VenueType.EXAM_HALL,
+            ]:
                 filtered.append(v)
 
     return filtered
