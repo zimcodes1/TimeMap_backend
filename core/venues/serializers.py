@@ -15,15 +15,19 @@ class VenueSerializer(serializers.ModelSerializer):
     owning_department_name = serializers.ReadOnlyField(source="owning_department.name")
     owning_faculty_name = serializers.ReadOnlyField(source="owning_faculty.name")
     owning_school_name = serializers.ReadOnlyField(source="owning_school.name")
+    building = serializers.CharField(source="location", required=False, allow_blank=True)
 
     class Meta:
         model = Venue
         fields = (
             "id",
             "name",
+            "code",
             "venue_type",
             "capacity",
             "exam_capacity",
+            "location",
+            "building",
             "facilities",
             "facilities_details",
             "owning_level",
@@ -38,16 +42,35 @@ class VenueSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "created_at")
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["building"] = instance.location
+        data["location"] = instance.location
+        return data
+
     def validate(self, attrs):
         request = self.context.get("request")
+        venue_type = attrs.get("venue_type") or (self.instance.venue_type if self.instance else "lecture_hall")
+
+        # CBT Center contextual rules
+        if venue_type in [Venue.VenueType.CBT_CENTER, Venue.VenueType.EXAM_HALL]:
+            # CBT centers do not have lecture capacity; default capacity to exam_capacity or 0
+            if not attrs.get("capacity"):
+                attrs["capacity"] = attrs.get("exam_capacity") or 0
+            if not attrs.get("exam_capacity") and attrs.get("capacity"):
+                attrs["exam_capacity"] = attrs.get("capacity")
+            # CBT centers do not have facility tags
+            if "facilities" in attrs:
+                attrs["facilities"] = []
+
         if not request or not request.user or not request.user.is_authenticated:
             return attrs
 
         user = request.user
-        owning_level = attrs.get("owning_level")
-        owning_dept = attrs.get("owning_department")
-        owning_fac = attrs.get("owning_faculty")
-        owning_sch = attrs.get("owning_school")
+        owning_level = attrs.get("owning_level") or (self.instance.owning_level if self.instance else None)
+        owning_dept = attrs.get("owning_department") or (self.instance.owning_department if self.instance else None)
+        owning_fac = attrs.get("owning_faculty") or (self.instance.owning_faculty if self.instance else None)
+        owning_sch = attrs.get("owning_school") or (self.instance.owning_school if self.instance else None)
 
         # Validate that only matching ownership field is set
         if owning_level == Venue.OwningLevel.DEPARTMENT and not owning_dept:

@@ -37,6 +37,9 @@ class CourseViewSet(viewsets.ModelViewSet):
         if user.role == "student" and hasattr(user, "student_profile"):
             base_qs = get_visible_courses_for_student(user.student_profile)
 
+        elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
+            base_qs = Course.objects.filter(lecturers=user.lecturer_profile)
+
         elif user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             base_qs = Course.objects.all()
 
@@ -64,20 +67,31 @@ class CourseViewSet(viewsets.ModelViewSet):
                     Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty=admin_prof.scope_faculty)
                     | Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department__faculty=admin_prof.scope_faculty)
                     | Q(id__in=granted_course_ids)
+                    | (Q(owning_level=Course.OwningLevel.SCHOOL, owning_school=admin_prof.scope_faculty.school) if admin_prof.scope_faculty.school else Q())
+                    | Q(owning_level=Course.OwningLevel.GENERAL)
+                    | Q(lecturers__department__faculty=admin_prof.scope_faculty)
                 ).distinct()
 
             elif level == "department":
                 if not admin_prof.scope_department:
                     return Course.objects.none()
 
+                dept = admin_prof.scope_department
+                fac = dept.faculty
+                sch = fac.school if fac else None
+
                 granted_course_ids = CourseAccessGrant.objects.filter(
-                    Q(granted_to_department=admin_prof.scope_department)
-                    | Q(course__owning_department=admin_prof.scope_department)
+                    status=CourseAccessGrant.Status.APPROVED,
+                    granted_to_department=dept,
                 ).values_list("course_id", flat=True)
 
                 base_qs = Course.objects.filter(
-                    Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department=admin_prof.scope_department)
+                    Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department=dept)
                     | Q(id__in=granted_course_ids)
+                    | (Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty=fac) if fac else Q())
+                    | (Q(owning_level=Course.OwningLevel.SCHOOL, owning_school=sch) if sch else Q())
+                    | Q(owning_level=Course.OwningLevel.GENERAL)
+                    | Q(lecturers__department=dept)
                 ).distinct()
 
         if base_qs is None:
@@ -92,6 +106,19 @@ class CourseViewSet(viewsets.ModelViewSet):
                 Q(target_program_id=program_param)
                 | Q(program_scope="general")
             )
+        lecturer_param = self.request.query_params.get("lecturer")
+        if lecturer_param:
+            if str(lecturer_param).isdigit():
+                base_qs = base_qs.filter(
+                    Q(lecturers__id=int(lecturer_param))
+                    | Q(lecturers__user_id=int(lecturer_param))
+                    | Q(lecturers__staff_id=str(lecturer_param))
+                ).distinct()
+            else:
+                base_qs = base_qs.filter(
+                    Q(lecturers__staff_id=str(lecturer_param))
+                    | Q(lecturers__user__identifier=str(lecturer_param))
+                ).distinct()
 
         return base_qs.select_related(
             "owning_department",
