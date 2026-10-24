@@ -4,7 +4,7 @@ from accounts.models import AdminOfficer, Student, User
 from courses.models import Course, CourseRegistration
 from hierarchy.models import Department, Faculty, School
 from rest_framework.test import APITestCase
-from scheduling.models import AcademicSession, Semester
+from scheduling.models import AcademicSession, GenerationScopePermission, Semester
 from venues.models import Venue
 
 
@@ -55,6 +55,39 @@ class ExamOptimizerRunWorkflowTests(APITestCase):
         student_user = User.objects.create_user(identifier="EXAM_STUDENT", role=User.Role.STUDENT, password="password")
         student = Student.objects.create(user=student_user, matric_number="EXAM_STUDENT", full_name="Exam Student", department=self.department, level=200)
         CourseRegistration.objects.create(student=student, course=self.course, academic_session=self.session.label)
+        GenerationScopePermission.objects.create(
+            school=self.school,
+            allow_faculty_exam_generation=True,
+            allow_department_exam_generation=True,
+        )
+
+    def test_department_admin_cannot_generate_when_policy_disabled(self):
+        perm = GenerationScopePermission.objects.get(school=self.school)
+        perm.allow_department_exam_generation = False
+        perm.save()
+        self.client.force_authenticate(self.department_admin_user)
+        access = self.client.get("/api/scheduling/exam-optimizer/access/", {
+            "semester": self.semester.id, "scope_type": "department", "scope_id": self.department.id,
+        })
+        self.assertEqual(access.status_code, 200)
+        self.assertTrue(access.data["can_view"])
+        self.assertFalse(access.data["can_optimize"])
+        response = self.client.post("/api/scheduling/exam-optimizer/optimize/", {
+            "semester_id": self.semester.id, "scope_type": "department", "scope_id": self.department.id,
+        }, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_faculty_admin_cannot_generate_when_policy_disabled(self):
+        perm = GenerationScopePermission.objects.get(school=self.school)
+        perm.allow_faculty_exam_generation = False
+        perm.save()
+        self.client.force_authenticate(self.faculty_admin_user)
+        access = self.client.get("/api/scheduling/exam-optimizer/access/", {
+            "semester": self.semester.id, "scope_type": "faculty", "scope_id": self.faculty.id,
+        })
+        self.assertEqual(access.status_code, 200)
+        self.assertTrue(access.data["can_view"])
+        self.assertFalse(access.data["can_optimize"])
 
     def test_scope_admin_can_generate_inspect_approve_and_publish_run(self):
         self.client.force_authenticate(self.department_admin_user)

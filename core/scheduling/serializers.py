@@ -903,6 +903,8 @@ class GenerationScopePermissionSerializer(serializers.ModelSerializer):
             "allow_faculty_generation",
             "allow_department_generation",
             "allow_faculty_exam_period",
+            "allow_faculty_exam_generation",
+            "allow_department_exam_generation",
             "updated_at",
         )
         read_only_fields = ("id", "updated_at")
