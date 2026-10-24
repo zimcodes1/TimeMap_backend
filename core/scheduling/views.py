@@ -940,6 +940,7 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
 
     def _can_access(self, user, semester, scope_type, scope_id, manage=False):
         from hierarchy.models import Department, Faculty, School
+        from .models import GenerationScopePermission
         try: scope_id = int(scope_id)
         except (TypeError, ValueError): return False
         profile = getattr(user, "admin_profile", None)
@@ -961,6 +962,9 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
         if scope_type == "school":
             return False  # Faculty and department admins cannot access school-wide scope
 
+        school = getattr(semester.session, "school", None)
+        perm = GenerationScopePermission.objects.filter(school=school).first() if school else None
+
         if scope_type == "department":
             department = Department.objects.filter(pk=scope_id, faculty__school=semester.session.school).first()
             if not department: return False
@@ -968,7 +972,11 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
             in_scope = profile.level == "department" and profile.scope_department_id == department.id
             fallback = not assigned_officer and in_scope
             officer = bool(profile.is_exam_officer and profile.level == "department" and profile.scope_department_id == scope_id)
-            return officer or fallback
+            has_role = officer or fallback
+            if not has_role: return False
+            if manage:
+                return bool(perm and perm.allow_department_exam_generation)
+            return True
         elif scope_type == "faculty":
             faculty = Faculty.objects.filter(pk=scope_id, school=semester.session.school).first()
             if not faculty: return False
@@ -976,7 +984,11 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
             in_scope = profile.level == "faculty" and profile.scope_faculty_id == faculty.id
             fallback = not assigned_officer and in_scope
             officer = bool(profile.is_exam_officer and profile.level == "faculty" and profile.scope_faculty_id == scope_id)
-            return officer or fallback
+            has_role = officer or fallback
+            if not has_role: return False
+            if manage:
+                return bool(perm and perm.allow_faculty_exam_generation)
+            return True
         return False
 
     @action(detail=False, methods=["get"], url_path="access")
@@ -985,8 +997,9 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
         scope_type, scope_id = request.query_params.get("scope_type"), request.query_params.get("scope_id")
         if not semester or not scope_type or not scope_id:
             return Response({"detail": "semester, scope_type and scope_id are required."}, status=400)
-        allowed = self._can_access(request.user, semester, scope_type, scope_id)
-        return Response({"can_view": allowed, "can_optimize": allowed})
+        can_view = self._can_access(request.user, semester, scope_type, scope_id, manage=False)
+        can_optimize = self._can_access(request.user, semester, scope_type, scope_id, manage=True)
+        return Response({"can_view": can_view, "can_optimize": can_optimize})
 
     @action(detail=False, methods=["get"], url_path="timetable")
     def timetable(self, request):
@@ -1143,6 +1156,8 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
     def approve_run(self, request, run_id=None):
         run, error = self._get_run(request, run_id)
         if error: return error
+        if not self._can_access(request.user, run.semester, run.scope_type, run.scope_id, manage=True):
+            return Response({"detail": "You do not have permission to approve exam timetables for this scope."}, status=403)
         if run.status == ExamOptimizerRun.Status.PUBLISHED: return Response({"detail": "Published runs cannot be re-approved."}, status=400)
         run.status = ExamOptimizerRun.Status.APPROVED
         run.approved_by = request.user
@@ -1154,6 +1169,8 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
     def publish_run(self, request, run_id=None):
         run, error = self._get_run(request, run_id)
         if error: return error
+        if not self._can_access(request.user, run.semester, run.scope_type, run.scope_id, manage=True):
+            return Response({"detail": "You do not have permission to publish exam timetables for this scope."}, status=403)
         if run.status != ExamOptimizerRun.Status.APPROVED: return Response({"detail": "Approve the inspected exam run before publishing."}, status=400)
         now = timezone.now()
         ExamOptimizerRun.objects.filter(semester=run.semester, scope_type=run.scope_type, scope_id=run.scope_id, status=ExamOptimizerRun.Status.PUBLISHED).exclude(pk=run.pk).update(status=ExamOptimizerRun.Status.APPROVED)

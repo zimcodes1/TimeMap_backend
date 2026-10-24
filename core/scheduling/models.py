@@ -249,10 +249,12 @@ class GenerationScopePermission(models.Model):
     allow_faculty_generation = models.BooleanField(default=False)
     allow_department_generation = models.BooleanField(default=False)
     allow_faculty_exam_period = models.BooleanField(default=False)
+    allow_faculty_exam_generation = models.BooleanField(default=False)
+    allow_department_exam_generation = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"GenerationPermission({self.school.code}: fac={self.allow_faculty_generation}, dept={self.allow_department_generation}, exam_period={self.allow_faculty_exam_period})"
+        return f"GenerationPermission({self.school.code}: fac={self.allow_faculty_generation}, dept={self.allow_department_generation}, exam_period={self.allow_faculty_exam_period}, fac_exam_gen={self.allow_faculty_exam_generation}, dept_exam_gen={self.allow_department_exam_generation})"
 
 
 class FacultyExamPeriod(models.Model):
