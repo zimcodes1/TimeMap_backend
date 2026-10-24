@@ -38,7 +38,29 @@ def build_exam_conflict_graph(
     cohort_overlaps: Dict[Tuple[int, int], float] = {}
 
     course_list = list(courses)
-    from courses.services import get_course_attributed_programs
+    from courses.services import get_course_attributed_programs, calculate_course_student_count
+    from student_counts.models import ProgramStudentCount
+
+    program_counts = {
+        (psc.program_id, psc.level): psc.count
+        for psc in ProgramStudentCount.objects.all()
+    }
+
+    # For courses lacking explicit student registration rows, synthesize deterministic cohort student IDs
+    for course in courses:
+        if not students_by_course[course.id]:
+            attributed_pids = get_course_attributed_programs(course)
+            synth_students = set()
+            if attributed_pids:
+                for pid in sorted(attributed_pids):
+                    headcount = program_counts.get((pid, course.level), 0)
+                    for k in range(1, headcount + 1):
+                        synth_students.add(f"cohort_p{pid}_l{course.level}_{k}")
+            if not synth_students:
+                est = calculate_course_student_count(course)
+                for k in range(1, est + 1):
+                    synth_students.add(f"cohort_c{course.id}_{k}")
+            students_by_course[course.id] = synth_students
 
     # Precompute attributed program cohorts per course: (program_id, course.level)
     course_cohorts = {
