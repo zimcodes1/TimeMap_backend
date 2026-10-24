@@ -14,12 +14,13 @@ def allocate_venues(
     exam_type: str,
     duration: int,
     per_student: Optional[int] = None,
+    venue_usage: Optional[Dict[int, int]] = None,
 ) -> Optional[Tuple[int, List[Dict[str, Any]]]]:
     """Dispatches venue allocation to the type-specific strategy.
 
     Provides exact parity with legacy _allocate() helper for written, CBT, and practical exams.
     """
     if exam_type != Course.ExamType.CBT:
-        return allocate_written_venues(venues, count, duration)
-    return allocate_cbt_venues(venues, count, per_student, duration)
+        return allocate_written_venues(venues, count, duration, venue_usage)
+    return allocate_cbt_venues(venues, count, per_student, duration, venue_usage)
 

@@ -40,11 +40,16 @@ def repair_conflicts(
                 continue
 
             second_state = scheduled_states[second_index]
+            conflict_graph = problem.student_conflict_graph or {}
+            is_joined = (
+                first.get("joined_session_id")
+                and first.get("joined_session_id") == second.get("joined_session_id")
+            )
             stu_clash = bool(
                 first_state["student_ids"].intersection(second_state["student_ids"])
-            )
+            ) or (second["course_id"] in conflict_graph.get(first["course_id"], set()))
             ven_clash = bool(
-                first_state["venue_ids"].intersection(second_state["venue_ids"])
+                not is_joined and first_state["venue_ids"].intersection(second_state["venue_ids"])
             )
 
             if stu_clash or ven_clash:

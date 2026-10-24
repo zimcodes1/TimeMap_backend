@@ -110,7 +110,11 @@ def validate_exam_timetable(
                         "reason": f"Student conflict with {second['course_code']}.",
                     }
                 )
-            if first_state["venue_ids"].intersection(second_state["venue_ids"]):
+            is_joined = (
+                first.get("joined_session_id")
+                and first.get("joined_session_id") == second.get("joined_session_id")
+            )
+            if not is_joined and first_state["venue_ids"].intersection(second_state["venue_ids"]):
                 errors.append(
                     {
                         "course_code": first["course_code"],

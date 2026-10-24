@@ -30,6 +30,7 @@ class ExamEvent:
     student_count: int = 0
     student_ids: Set[int | str] = field(default_factory=set)
     populations: List[ExamPopulation] = field(default_factory=list)
+    attributed_program_ids: Set[int] = field(default_factory=set)
     department_id: Optional[int] = None
     department_name: Optional[str] = None
     program_id: Optional[int] = None

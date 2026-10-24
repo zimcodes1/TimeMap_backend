@@ -46,6 +46,7 @@ def resolve_course_populations(
                 p = programs_map.get(pid)
                 headcount = program_counts.get((pid, course.level), 0)
                 if headcount > 0:
+                    pop_students = {f"cohort_p{pid}_l{course.level}_{k}" for k in range(1, headcount + 1)}
                     populations.append(
                         ExamPopulation(
                             course_id=course.id,
@@ -55,12 +56,19 @@ def resolve_course_populations(
                             program_name=p.name if p else None,
                             level=course.level,
                             student_count=headcount,
-                            student_ids=set(),
+                            student_ids=pop_students,
                         )
                     )
 
         total_cohort_headcount = sum(p.student_count for p in populations)
         effective_count = max(len(registered_students), total_cohort_headcount, estimated_count)
+
+        if not registered_students and populations:
+            registered_students = set()
+            for pop in populations:
+                registered_students.update(pop.student_ids)
+        elif not registered_students:
+            registered_students = {f"cohort_c{course.id}_{k}" for k in range(1, effective_count + 1)}
 
         department = course.owning_department or (
             course.target_program.department if course.target_program_id else None
@@ -102,6 +110,7 @@ def resolve_course_populations(
             student_count=effective_count,
             student_ids=registered_students,
             populations=populations,
+            attributed_program_ids=set(attributed_pids),
             department_id=dept_id,
             department_name=dept_name,
             program_id=prog_id,
