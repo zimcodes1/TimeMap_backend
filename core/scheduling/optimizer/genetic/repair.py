@@ -125,11 +125,13 @@ def repair_chromosome(
                 random.shuffle(alt_slots)
 
                 relocated = False
+                blocked_venues = getattr(problem, "blocked_venue_slots", {}) or {}
                 for candidate_slot in alt_slots:
                     free_venues = [
                         vid
                         for vid in allowed
                         if vid not in slot_occupied_venues[candidate_slot.slot_id]
+                        and candidate_slot.slot_id not in blocked_venues.get(vid, set())
                     ]
                     if free_venues:
                         new_vid = pick_best_fit_venue(

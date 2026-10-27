@@ -1173,7 +1173,33 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
             return Response({"detail": "You do not have permission to publish exam timetables for this scope."}, status=403)
         if run.status != ExamOptimizerRun.Status.APPROVED: return Response({"detail": "Approve the inspected exam run before publishing."}, status=400)
         now = timezone.now()
-        ExamOptimizerRun.objects.filter(semester=run.semester, scope_type=run.scope_type, scope_id=run.scope_id, status=ExamOptimizerRun.Status.PUBLISHED).exclude(pk=run.pk).update(status=ExamOptimizerRun.Status.APPROVED)
+        # Cascade unpublish:
+        # School scope: unpublishes all other published exam runs for this semester
+        # Faculty scope: unpublishes other faculty runs for this faculty AND child department runs under this faculty
+        # Department scope: unpublishes other department runs for this department
+        if run.scope_type == ExamOptimizerRun.ScopeType.SCHOOL:
+            ExamOptimizerRun.objects.filter(
+                semester=run.semester,
+                status=ExamOptimizerRun.Status.PUBLISHED,
+            ).exclude(pk=run.pk).update(status=ExamOptimizerRun.Status.APPROVED)
+        elif run.scope_type == ExamOptimizerRun.ScopeType.FACULTY:
+            from hierarchy.models import Department
+            dept_ids = list(Department.objects.filter(faculty_id=run.scope_id).values_list("id", flat=True))
+            ExamOptimizerRun.objects.filter(
+                semester=run.semester,
+                status=ExamOptimizerRun.Status.PUBLISHED,
+            ).filter(
+                Q(scope_type=ExamOptimizerRun.ScopeType.FACULTY, scope_id=run.scope_id)
+                | Q(scope_type=ExamOptimizerRun.ScopeType.DEPARTMENT, scope_id__in=dept_ids)
+            ).exclude(pk=run.pk).update(status=ExamOptimizerRun.Status.APPROVED)
+        else:
+            ExamOptimizerRun.objects.filter(
+                semester=run.semester,
+                scope_type=ExamOptimizerRun.ScopeType.DEPARTMENT,
+                scope_id=run.scope_id,
+                status=ExamOptimizerRun.Status.PUBLISHED,
+            ).exclude(pk=run.pk).update(status=ExamOptimizerRun.Status.APPROVED)
+
         run.status = ExamOptimizerRun.Status.PUBLISHED
         run.published_by = request.user
         run.published_at = now

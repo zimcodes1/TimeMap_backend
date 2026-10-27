@@ -82,6 +82,26 @@ def repair_conflicts(
                                 has_clash = True
                                 break
 
+                    if not has_clash and getattr(problem, "blocked_venue_windows", None):
+                        for vid in second_state["venue_ids"]:
+                            for ext in problem.blocked_venue_windows.get(vid, []):
+                                if ext["date"] == alt_day:
+                                    if alt_start < ext["end_time"] and ext["start_time"] < finish:
+                                        has_clash = True
+                                        break
+                            if has_clash:
+                                break
+
+                    if not has_clash and getattr(problem, "blocked_student_windows", None):
+                        for stu_id in second_state["student_ids"]:
+                            for ext in problem.blocked_student_windows.get(stu_id, []):
+                                if ext["date"] == alt_day:
+                                    if alt_start < ext["end_time"] and ext["start_time"] < finish:
+                                        has_clash = True
+                                        break
+                            if has_clash:
+                                break
+
                     if not has_clash:
                         # Apply repair
                         second["date"] = alt_day.isoformat()

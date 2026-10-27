@@ -16,6 +16,7 @@ def validate_exam_timetable(
     start_date: date,
     end_date: date,
     policy: Optional[CalendarPolicy] = None,
+    problem: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Independently verifies that the generated exam timetable satisfies all hard constraints.
 
@@ -121,6 +122,48 @@ def validate_exam_timetable(
                         "reason": f"Venue conflict with {second['course_code']}.",
                     }
                 )
+
+    # 6. External commitment checks (ancestor and peer published timetables)
+    if problem:
+        blocked_venues = getattr(problem, "blocked_venue_windows", None) or {}
+        blocked_students = getattr(problem, "blocked_student_windows", None) or {}
+
+        for index, ev in enumerate(events):
+            ev_date = date.fromisoformat(ev["date"]) if isinstance(ev["date"], str) else ev["date"]
+            ev_start = time.fromisoformat(ev["start_time"]) if isinstance(ev["start_time"], str) else ev["start_time"]
+            ev_end = time.fromisoformat(ev["end_time"]) if isinstance(ev["end_time"], str) else ev["end_time"]
+            state = scheduled_states[index]
+
+            # Check external venue overlaps
+            if blocked_venues:
+                for vid in state["venue_ids"]:
+                    for ext in blocked_venues.get(vid, []):
+                        if ext["date"] == ev_date:
+                            if ev_start < ext["end_time"] and ext["start_time"] < ev_end:
+                                errors.append(
+                                    {
+                                        "course_code": ev["course_code"],
+                                        "reason": f"External venue conflict with published timetable [{ext.get('scope', 'External')}] at venue #{vid}.",
+                                    }
+                                )
+                                break
+
+            # Check external student overlaps
+            if blocked_students:
+                for stu_id in state["student_ids"]:
+                    for ext in blocked_students.get(stu_id, []):
+                        if ext["date"] == ev_date:
+                            if ev_start < ext["end_time"] and ext["start_time"] < ev_end:
+                                errors.append(
+                                    {
+                                        "course_code": ev["course_code"],
+                                        "reason": f"External student conflict with published timetable for course {ext.get('course_code', '')}.",
+                                    }
+                                )
+                                break
+                    else:
+                        continue
+                    break
 
     return {"valid": not errors, "errors": errors}
 

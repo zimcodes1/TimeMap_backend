@@ -125,6 +125,32 @@ def search_exam_schedule(
                             has_time_clash = True
                             break
 
+            # Check external pre-existing student commitments
+            if not has_time_clash and problem.blocked_student_windows and students:
+                for stu_id in students:
+                    for ext in problem.blocked_student_windows.get(stu_id, []):
+                        if ext["date"] == day:
+                            ext_start_m = _minutes(ext["start_time"])
+                            ext_end_m = _minutes(ext["end_time"])
+                            if cur_start_m < ext_end_m and ext_start_m < cur_end_m:
+                                has_time_clash = True
+                                break
+                    if has_time_clash:
+                        break
+
+            # Check external pre-existing cohort commitments
+            if not has_time_clash and problem.blocked_cohort_windows and event_data.populations:
+                for pop in event_data.populations:
+                    for ext in problem.blocked_cohort_windows.get((pop.program_id, pop.level), []):
+                        if ext["date"] == day:
+                            ext_start_m = _minutes(ext["start_time"])
+                            ext_end_m = _minutes(ext["end_time"])
+                            if cur_start_m < ext_end_m and ext_start_m < cur_end_m:
+                                has_time_clash = True
+                                break
+                    if has_time_clash:
+                        break
+
             if has_time_clash:
                 continue
 
@@ -135,6 +161,16 @@ def search_exam_schedule(
                 old_end_m = _minutes(old["end_time_val"])
                 if cur_start_m < old_end_m and old_start_m < cur_end_m:
                     busy_venue_ids.update(old["venue_ids"])
+
+            # Filter out venues pre-occupied by external published schedules
+            if problem.blocked_venue_windows:
+                for vid, ext_list in problem.blocked_venue_windows.items():
+                    for ext in ext_list:
+                        if ext["date"] == day:
+                            ext_start_m = _minutes(ext["start_time"])
+                            ext_end_m = _minutes(ext["end_time"])
+                            if cur_start_m < ext_end_m and ext_start_m < cur_end_m:
+                                busy_venue_ids.add(vid)
 
             free_venues = [v for v in eligible_venues if v.id not in busy_venue_ids]
             if not free_venues:
@@ -153,6 +189,23 @@ def search_exam_schedule(
                 continue
 
             finish_minutes = _minutes(start_time) + actual_duration
+
+            # Verify allocated venues with actual_duration do not collide with external commitments
+            has_ext_venue_conflict = False
+            if problem.blocked_venue_windows:
+                for a in venue_allocs:
+                    vid = a["venue_id"]
+                    for ext in problem.blocked_venue_windows.get(vid, []):
+                        if ext["date"] == day:
+                            ext_start_m = _minutes(ext["start_time"])
+                            ext_end_m = _minutes(ext["end_time"])
+                            if cur_start_m < ext_end_m and ext_start_m < finish_minutes:
+                                has_ext_venue_conflict = True
+                                break
+                    if has_ext_venue_conflict:
+                        break
+            if has_ext_venue_conflict:
+                continue
             finish = time(finish_minutes // 60, finish_minutes % 60)
 
             # 3. Candidate Scoring & Objective Function

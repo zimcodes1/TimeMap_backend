@@ -36,6 +36,16 @@ class ExamSchedulingProblem:
     # Calendar operating policy
     policy: CalendarPolicy = field(default_factory=CalendarPolicy)
 
+    # Pre-existing commitments from ancestor and peer published timetables
+    # Maps venue_id -> list of occupied window dicts: {date, start_time, end_time, course_code, scope}
+    blocked_venue_windows: Dict[int, List[Dict[str, Any]]] = field(default_factory=dict)
+    # Maps (program_id, level) -> list of occupied window dicts
+    blocked_cohort_windows: Dict[Tuple[int, int], List[Dict[str, Any]]] = field(default_factory=dict)
+    # Maps student_id -> list of occupied window dicts
+    blocked_student_windows: Dict[int, List[Dict[str, Any]]] = field(default_factory=dict)
+    # Diagnostic breakdown of external commitments
+    external_commitments_details: List[Dict[str, Any]] = field(default_factory=list)
+
     @property
     def total_events(self) -> int:
         return len(self.events)
