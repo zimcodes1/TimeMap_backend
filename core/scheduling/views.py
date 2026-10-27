@@ -898,6 +898,187 @@ class ExamSittingViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated(), IsPasswordResetDone(), IsAdminUserRole()]
         return super().get_permissions()
 
+    def list(self, request, *args, **kwargs):
+        if request.user.is_authenticated and request.user.role in ["student", "class_rep"]:
+            return self.my_exams(request)
+        return super().list(request, *args, **kwargs)
+
+    @action(detail=False, methods=["get"], url_path="my-exams")
+    def my_exams(self, request):
+        """
+        Student-facing read-only endpoint returning published examination sittings
+        matching the student's enrolled / visible courses for the semester.
+        """
+        user = request.user
+        if user.role not in ["student", "class_rep"] or not hasattr(user, "student_profile"):
+            return Response([])
+
+        student = user.student_profile
+        from courses.services import get_visible_courses_for_student
+        visible_courses = get_visible_courses_for_student(student)
+        course_map = {c.id: c for c in visible_courses}
+        course_ids = set(course_map.keys())
+
+        if not course_ids:
+            return Response([])
+
+        semester_param = request.query_params.get("semester") or request.query_params.get("semester_id")
+        start_date_param = request.query_params.get("start_date") or request.query_params.get("startDate")
+        end_date_param = request.query_params.get("end_date") or request.query_params.get("endDate")
+        date_param = request.query_params.get("date")
+
+        # Resolve student hierarchy scopes
+        school_id = getattr(getattr(student.department, "faculty", None), "school_id", None)
+        faculty_id = getattr(student.department, "faculty_id", None)
+        department_id = student.department_id
+
+        run_qs = ExamOptimizerRun.objects.filter(status=ExamOptimizerRun.Status.PUBLISHED)
+        if semester_param:
+            run_qs = run_qs.filter(semester_id=semester_param)
+        else:
+            run_qs = run_qs.filter(semester__is_active=True)
+
+        # Priority resolution for published exam runs: school -> faculty -> department
+        candidate_runs = []
+        if school_id:
+            candidate_runs.extend(list(run_qs.filter(scope_type="school", scope_id=school_id)))
+        if faculty_id:
+            candidate_runs.extend(list(run_qs.filter(scope_type="faculty", scope_id=faculty_id)))
+        if department_id:
+            candidate_runs.extend(list(run_qs.filter(scope_type="department", scope_id=department_id)))
+
+        if not candidate_runs and school_id:
+            candidate_runs = list(run_qs.filter(
+                Q(semester__session__school_id=school_id) | Q(semester__school_id=school_id)
+            ))
+
+        results = []
+        seen_course_dates = set()
+
+        for run in candidate_runs:
+            events = run.events or []
+            for ev in events:
+                c_id = ev.get("course_id")
+                if c_id not in course_ids:
+                    continue
+
+                ev_date = ev.get("date")
+                if not ev_date:
+                    continue
+                if date_param and ev_date != date_param:
+                    continue
+                if start_date_param and ev_date < start_date_param:
+                    continue
+                if end_date_param and ev_date > end_date_param:
+                    continue
+
+                start_time_str = ev.get("start_time", "09:00:00")[:5]
+                end_time_str = ev.get("end_time", "12:00:00")[:5]
+                dedup_key = (c_id, ev_date, start_time_str)
+                if dedup_key in seen_course_dates:
+                    continue
+                seen_course_dates.add(dedup_key)
+
+                course_obj = course_map.get(c_id)
+                venues_list = ev.get("venues") or []
+                primary_venue_name = "TBA"
+                primary_venue_building = ""
+                primary_venue_id = ""
+
+                if venues_list:
+                    v0 = venues_list[0]
+                    primary_venue_id = str(v0.get("venue_id") or "")
+                    primary_venue_name = v0.get("venue_name") or "TBA"
+                    if len(venues_list) > 1:
+                        hall_names = [v.get("venue_name") for v in venues_list if v.get("venue_name")]
+                        if hall_names:
+                            primary_venue_name = ", ".join(hall_names[:2])
+                            if len(hall_names) > 2:
+                                primary_venue_name += f" (+{len(hall_names) - 2} more)"
+
+                results.append({
+                    "id": f"exam_opt_{run.id}_{c_id}_{ev_date}",
+                    "course": {
+                        "id": str(c_id),
+                        "code": ev.get("course_code") or (course_obj.code if course_obj else "EXAM"),
+                        "title": ev.get("course_title") or (course_obj.title if course_obj else "Examination"),
+                        "department": ev.get("department_name") or (course_obj.owning_department.name if course_obj and course_obj.owning_department else None),
+                        "level": str(ev.get("course_level") or (course_obj.level if course_obj else student.level)),
+                    },
+                    "venue": {
+                        "id": primary_venue_id or "v_exam",
+                        "name": primary_venue_name,
+                        "building": primary_venue_building,
+                    },
+                    "venues": venues_list,
+                    "date": ev_date,
+                    "start_time": start_time_str,
+                    "end_time": end_time_str,
+                    "duration_minutes": ev.get("duration_minutes") or 120,
+                    "exam_type": ev.get("exam_type", "written"),
+                    "session_type": "exam",
+                    "student_count": ev.get("student_count", 0),
+                    "status": "scheduled",
+                    "is_exam": True,
+                })
+
+        # Also incorporate manual published TimetableEntry instances of type EXAM
+        manual_exam_entries = TimetableEntry.objects.filter(
+            entry_type=TimetableEntry.EntryType.EXAM,
+            course_id__in=course_ids,
+            recurrence_start_date__isnull=False,
+        ).select_related("course", "venue", "semester")
+
+        if date_param:
+            manual_exam_entries = manual_exam_entries.filter(recurrence_start_date=date_param)
+        if start_date_param:
+            manual_exam_entries = manual_exam_entries.filter(recurrence_start_date__gte=start_date_param)
+        if end_date_param:
+            manual_exam_entries = manual_exam_entries.filter(recurrence_start_date__lte=end_date_param)
+        if semester_param:
+            manual_exam_entries = manual_exam_entries.filter(semester_id=semester_param)
+
+        for entry in manual_exam_entries:
+            ev_date = entry.recurrence_start_date.isoformat()
+            start_str = entry.start_time.strftime("%H:%M") if entry.start_time else "09:00"
+            end_str = entry.end_time.strftime("%H:%M") if entry.end_time else "12:00"
+            dedup_key = (entry.course_id, ev_date, start_str)
+            if dedup_key in seen_course_dates:
+                continue
+            seen_course_dates.add(dedup_key)
+
+            sitting = getattr(entry, "exam_sitting", None)
+            candidates_count = sitting.registered_candidates_count if sitting else 0
+
+            results.append({
+                "id": f"exam_entry_{entry.id}_{ev_date}",
+                "course": {
+                    "id": str(entry.course_id),
+                    "code": entry.course.code if entry.course else entry.title,
+                    "title": entry.course.title if entry.course else entry.title,
+                    "department": entry.course.owning_department.name if entry.course and entry.course.owning_department else None,
+                    "level": str(entry.course.level if entry.course else student.level),
+                },
+                "venue": {
+                    "id": str(entry.venue_id) if entry.venue_id else "v_exam",
+                    "name": entry.venue.name if entry.venue else "TBA",
+                    "building": entry.venue.building if entry.venue else "",
+                },
+                "venues": [{"venue_id": entry.venue_id, "venue_name": entry.venue.name if entry.venue else "TBA"}],
+                "date": ev_date,
+                "start_time": start_str,
+                "end_time": end_str,
+                "duration_minutes": 120,
+                "exam_type": "written",
+                "session_type": "exam",
+                "student_count": candidates_count,
+                "status": entry.status if entry.status != "pending_approval" else "scheduled",
+                "is_exam": True,
+            })
+
+        results.sort(key=lambda x: (x["date"], x["start_time"]))
+        return Response(results)
+
 
 def infer_optimizer_config_for_scope(
     scope_type: str,
