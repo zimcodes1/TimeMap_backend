@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 from .course import CourseData
 from .lecturer import LecturerData
@@ -30,11 +30,15 @@ class SchedulingProblem:
     )
     daily_lecture_limit: int = 3
 
-    # Pre-existing slot occupancy from higher-scope published timetables.
-    # Maps venue_id -> set of slot_ids (e.g. "MO_08:00-10:00") already occupied
-    # by a published run at a broader scope (faculty or school level).
-    # The GA must treat these as hard-blocked and never assign a course there.
+    # Pre-existing slot occupancy from ancestor and peer published timetables.
+    # Maps venue_id -> set of slot_ids (e.g. "MO_08:00-10:00") already occupied.
     blocked_venue_slots: Dict[int | str, Set[str]] = field(default_factory=dict)
+    # Maps lecturer_id -> set of slot_ids already occupied by external schedules.
+    blocked_lecturer_slots: Dict[int | str, Set[str]] = field(default_factory=dict)
+    # Maps (program_id, level) -> set of slot_ids already occupied by external schedules.
+    blocked_cohort_slots: Dict[Tuple[int, int], Set[str]] = field(default_factory=dict)
+    # Detailed metadata for conflict diagnostics
+    external_commitments_details: List[Dict[str, Any]] = field(default_factory=list)
 
     # Metadata
     scope_type: str = "school"

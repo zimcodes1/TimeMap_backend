@@ -54,8 +54,8 @@ def check_pre_existing_conflicts(
     problem: SchedulingProblem,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     """
-    Detects assignments that collide with slots already occupied by a higher-scope
-    published timetable (stored in problem.blocked_venue_slots).
+    Detects assignments that collide with slots already occupied by ancestor or peer
+    published timetables (venues, lecturers, or student cohorts).
 
     This is treated as a HARD constraint: any such placement is a direct conflict
     with an existing, live lecture and must be penalised heavily.
@@ -63,31 +63,85 @@ def check_pre_existing_conflicts(
     Returns:
       (conflict_count, conflict_details_list)
     """
-    if not problem.blocked_venue_slots:
+    has_venues = bool(problem.blocked_venue_slots)
+    has_lecturers = bool(getattr(problem, "blocked_lecturer_slots", None))
+    has_cohorts = bool(getattr(problem, "blocked_cohort_slots", None))
+
+    if not (has_venues or has_lecturers or has_cohorts):
         return 0, []
 
     conflicts: List[Dict[str, Any]] = []
     conflict_count = 0
 
     for a in assignments:
-        blocked = problem.blocked_venue_slots.get(a.venue_id)
-        if blocked and a.slot.slot_id in blocked:
-            conflict_count += 1
-            venue = problem.venues.get(a.venue_id)
-            venue_name = venue.name if venue else f"Venue #{a.venue_id}"
-            conflicts.append(
-                {
-                    "type": "pre_existing_conflict",
-                    "venue_id": str(a.venue_id),
-                    "venue_name": venue_name,
-                    "course": a.course_code,
-                    "occurrence": a.occurrence.occurrence_id,
-                    "slot": str(a.slot),
-                    "detail": (
-                        "Slot is already occupied by a higher-scope published timetable. "
-                        "This placement creates a real-world clash."
-                    ),
-                }
-            )
+        sid = a.slot.slot_id
+
+        # 1. Venue pre-existing clash
+        if has_venues:
+            blocked = problem.blocked_venue_slots.get(a.venue_id)
+            if blocked and sid in blocked:
+                conflict_count += 1
+                venue = problem.venues.get(a.venue_id)
+                venue_name = venue.name if venue else f"Venue #{a.venue_id}"
+                conflicts.append(
+                    {
+                        "type": "pre_existing_conflict",
+                        "sub_type": "venue",
+                        "venue_id": str(a.venue_id),
+                        "venue_name": venue_name,
+                        "course": a.course_code,
+                        "occurrence": a.occurrence.occurrence_id,
+                        "slot": str(a.slot),
+                        "detail": (
+                            f"Venue '{venue_name}' is already occupied in a published timetable during {a.slot}."
+                        ),
+                    }
+                )
+
+        # 2. Lecturer pre-existing clash
+        if has_lecturers:
+            for lid in a.occurrence.lecturer_ids:
+                blocked = problem.blocked_lecturer_slots.get(lid)
+                if blocked and sid in blocked:
+                    conflict_count += 1
+                    lec_info = problem.lecturer_details.get(lid)
+                    lec_name = lec_info.name if lec_info else f"Staff #{lid}"
+                    conflicts.append(
+                        {
+                            "type": "pre_existing_conflict",
+                            "sub_type": "lecturer",
+                            "lecturer_id": str(lid),
+                            "lecturer_name": lec_name,
+                            "course": a.course_code,
+                            "occurrence": a.occurrence.occurrence_id,
+                            "slot": str(a.slot),
+                            "detail": (
+                                f"Lecturer {lec_name} is already committed to another lecture during {a.slot} in a published timetable."
+                            ),
+                        }
+                    )
+
+        # 3. Student cohort pre-existing clash
+        if has_cohorts:
+            for grp in a.occurrence.student_groups:
+                cohort_key = (grp.program_id, grp.level)
+                blocked = problem.blocked_cohort_slots.get(cohort_key)
+                if blocked and sid in blocked:
+                    conflict_count += 1
+                    conflicts.append(
+                        {
+                            "type": "pre_existing_conflict",
+                            "sub_type": "student_cohort",
+                            "program_id": grp.program_id,
+                            "program_name": grp.display_name,
+                            "level": grp.level,
+                            "course": a.course_code,
+                            "occurrence": a.occurrence.occurrence_id,
+                            "slot": str(a.slot),
+                            "detail": (
+                                f"Cohort {grp.display_name} {grp.level}L is already scheduled for another course during {a.slot} in a published timetable."
+                            ),
+                        }
+                    )
 
     return conflict_count, conflicts

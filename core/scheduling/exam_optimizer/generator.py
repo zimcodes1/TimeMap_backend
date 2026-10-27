@@ -41,7 +41,8 @@ class ExamGenerationResult:
 
     @property
     def is_feasible(self) -> bool:
-        return self.evaluation.is_feasible
+        has_unscheduled = bool(self.diagnostics and self.diagnostics.get("unscheduled"))
+        return self.evaluation.is_feasible and not has_unscheduled and self.status in ("OPTIMAL", "FEASIBLE")
 
     @property
     def hard_conflicts_count(self) -> int:
@@ -99,6 +100,7 @@ def generate_exam_timetable(
         start_date=problem.start_date,
         end_date=problem.end_date,
         policy=problem.policy,
+        problem=problem,
     )
 
     # 6. Build diagnostics matching API contract

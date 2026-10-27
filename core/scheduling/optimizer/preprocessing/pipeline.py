@@ -1,4 +1,4 @@
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 from django.db.models import Q
 
 from ..models.course import CourseData
@@ -24,82 +24,168 @@ def _slot_id(day_code: str, start_time_str: str) -> str | None:
     return None
 
 
-def build_blocked_venue_slots_from_db(
+def build_external_commitments_from_db(
     semester_id: int | str,
     scope_type: str,
     scope_id: int | str,
-) -> Dict[int | str, Set[str]]:
+) -> Tuple[
+    Dict[int | str, Set[str]],
+    Dict[int | str, Set[str]],
+    Dict[Tuple[int, int], Set[str]],
+    List[Dict[str, Any]],
+]:
     """
-    Queries published TimetableEntry records that come from higher-scope published
-    runs (i.e. a faculty run when we are doing department, or a school run when we
-    are doing faculty/department) for the same semester and builds a mapping of:
+    Queries published TimetableGenerationRun instances (and active TimetableEntry rows)
+    outside the generating scope for the same semester, and constructs:
+      1. blocked_venue_slots: venue_id -> set of slot_ids ("MO_08:00-10:00")
+      2. blocked_lecturer_slots: lecturer_id -> set of slot_ids
+      3. blocked_cohort_slots: (program_id, level) -> set of slot_ids
+      4. commitment_details: list of diagnostic dictionaries
 
-        venue_id -> set of slot_ids that are already occupied
-
-    These slots are passed into the SchedulingProblem so the GA can treat them as
-    hard-blocked and avoid placing any new course there.
-
-    Scope hierarchy:
-        department  -> blocked by: published faculty-level AND school-level entries
-        faculty     -> blocked by: published school-level entries
-        school      -> nothing is blocked (top scope)
+    Scope Awareness Hierarchy & Peering:
+      - department: blocked by published runs of ancestor faculty & school,
+                    AND sibling departments (peer scopes sharing venues/staff/cohorts),
+                    AND peer faculties.
+      - faculty:    blocked by published school-level runs,
+                    AND sibling faculties,
+                    AND departments outside this faculty.
+      - school:     master institutional scope (clean slate).
     """
-    from scheduling.models import TimetableGenerationRun
+    from hierarchy.models import Department
+    from scheduling.models import TimetableEntry, TimetableGenerationRun
 
-    # School-level generation: nothing pre-exists above it
+    blocked_venues: Dict[int | str, Set[str]] = {}
+    blocked_lecturers: Dict[int | str, Set[str]] = {}
+    blocked_cohorts: Dict[Tuple[int, int], Set[str]] = {}
+    details: List[Dict[str, Any]] = []
+
+    # School-level generation: clean slate master institutional schedule
     if scope_type == "school":
-        return {}
+        return blocked_venues, blocked_lecturers, blocked_cohorts, details
 
-    # Find all TimetableEntry records for this semester that belong to published
-    # higher-scope generation runs.
-    published_scope_types: List[str] = []
-    if scope_type == "department":
-        # blocked by faculty-scope and school-scope published runs
-        published_scope_types = ["faculty", "school"]
-    elif scope_type == "faculty":
-        # blocked by school-scope published runs
-        published_scope_types = ["school"]
-
-    # Get IDs of published runs at higher scope for this semester
-    higher_published_run_ids = list(
-        TimetableGenerationRun.objects.filter(
-            semester_id=semester_id,
-            is_published=True,
-            scope_type__in=published_scope_types,
-        ).values_list("id", flat=True)
+    # Determine external published generation runs
+    runs_qs = TimetableGenerationRun.objects.filter(
+        semester_id=semester_id,
+        is_published=True,
     )
 
-    if not higher_published_run_ids:
-        return {}
+    if scope_type == "department":
+        # Any published run that is NOT this department's own run
+        runs_qs = runs_qs.exclude(scope_type="department", scope_id=int(scope_id))
+    elif scope_type == "faculty":
+        # Exclude this faculty's own run AND child department runs under this faculty
+        dept_ids = list(Department.objects.filter(faculty_id=scope_id).values_list("id", flat=True))
+        runs_qs = runs_qs.exclude(
+            Q(scope_type="faculty", scope_id=int(scope_id))
+            | Q(scope_type="department", scope_id__in=dept_ids)
+        )
 
-    # We need to find TimetableEntry rows that were created BY those runs.
-    # Unfortunately TimetableEntry has no FK back to TimetableGenerationRun.
-    # The best proxy is: entries created by the admin who initiated those runs,
-    # for the same semester. However that is fragile if the same admin created
-    # manual entries too.
-    #
-    # A more reliable approach: for each published run, look at its
-    # assignments_payload and reconstruct the blocked (venue, slot) pairs
-    # directly from the JSON — no DB join needed and 100% accurate.
-
-    blocked: Dict[int | str, Set[str]] = {}
-
-    for run in TimetableGenerationRun.objects.filter(id__in=higher_published_run_ids):
+    # 1. Ingest assignments_payload from external published generation runs
+    for run in runs_qs:
         for item in (run.assignments_payload or []):
             venue_id = item.get("venue_id")
-            day_code = item.get("day")  # "MO", "TU", etc.
-            start_time = item.get("start_time", "")  # "08:00:00" or "08:00"
+            day_code = item.get("day")
+            start_time = item.get("start_time", "")
 
-            if not venue_id or not day_code or not start_time:
+            if not day_code or not start_time:
                 continue
 
             sid = _slot_id(day_code, str(start_time))
             if sid is None:
                 continue
 
-            blocked.setdefault(venue_id, set()).add(sid)
+            # Block venue
+            if venue_id:
+                blocked_venues.setdefault(venue_id, set()).add(sid)
 
-    return blocked
+            # Block lecturers
+            lecturer_ids = item.get("lecturer_ids", [])
+            for lid in lecturer_ids:
+                blocked_lecturers.setdefault(lid, set()).add(sid)
+
+            # Block cohorts
+            programs = item.get("programs", [])
+            for prog in programs:
+                pid = prog.get("id")
+                lvl = prog.get("level") or item.get("level")
+                if pid and lvl:
+                    blocked_cohorts.setdefault((int(pid), int(lvl)), set()).add(sid)
+
+            details.append({
+                "source": "published_run",
+                "scope_type": run.scope_type,
+                "scope_id": run.scope_id,
+                "scope_name": run.scope_name,
+                "course_code": item.get("course_code"),
+                "slot_id": sid,
+                "venue_id": venue_id,
+                "venue_name": item.get("venue_name"),
+                "lecturer_ids": lecturer_ids,
+                "programs": programs,
+            })
+
+    # 2. Ingest manual TimetableEntry rows outside the generating scope
+    entry_qs = TimetableEntry.objects.filter(
+        semester_id=semester_id,
+        entry_type=TimetableEntry.EntryType.LECTURE,
+    ).select_related("course", "venue").prefetch_related("course__lecturers")
+
+    if scope_type == "department":
+        entry_qs = entry_qs.exclude(course__owning_department_id=int(scope_id))
+    elif scope_type == "faculty":
+        dept_ids = list(Department.objects.filter(faculty_id=scope_id).values_list("id", flat=True))
+        entry_qs = entry_qs.exclude(
+            Q(course__owning_faculty_id=int(scope_id))
+            | Q(course__owning_department_id__in=dept_ids)
+        )
+
+    weekday_name_to_code = {
+        "monday": "MO", "tuesday": "TU", "wednesday": "WE",
+        "thursday": "TH", "friday": "FR",
+    }
+
+    for entry in entry_qs:
+        day_code = None
+        if entry.recurrence_rule:
+            parts = entry.recurrence_rule.lower().split(":")
+            if len(parts) > 1 and parts[-1] in weekday_name_to_code:
+                day_code = weekday_name_to_code[parts[-1]]
+        if not day_code:
+            continue
+
+        sid = _slot_id(day_code, str(entry.start_time))
+        if not sid:
+            continue
+
+        if entry.venue_id:
+            blocked_venues.setdefault(entry.venue_id, set()).add(sid)
+
+        if entry.course:
+            for lec in entry.course.lecturers.all():
+                blocked_lecturers.setdefault(lec.id, set()).add(sid)
+
+            if entry.course.target_program_id and entry.course.level:
+                blocked_cohorts.setdefault(
+                    (entry.course.target_program_id, entry.course.level), set()
+                ).add(sid)
+
+    return blocked_venues, blocked_lecturers, blocked_cohorts, details
+
+
+def build_blocked_venue_slots_from_db(
+    semester_id: int | str,
+    scope_type: str,
+    scope_id: int | str,
+) -> Dict[int | str, Set[str]]:
+    """
+    Backward-compatible wrapper returning only the blocked_venues map.
+    """
+    venues, _, _, _ = build_external_commitments_from_db(
+        semester_id=semester_id,
+        scope_type=scope_type,
+        scope_id=scope_id,
+    )
+    return venues
 
 
 def build_scheduling_problem_from_db(
@@ -423,12 +509,13 @@ def build_scheduling_problem_from_db(
     # 10. Build student conflict graph
     conflict_graph, shared_groups = build_student_conflict_graph(courses_data)
 
-    # 11. Build blocked venue-slots from higher-scope published timetables so the
-    #     GA never places a new course in a slot already occupied by those runs.
-    blocked_venue_slots = build_blocked_venue_slots_from_db(
-        semester_id=semester_id,
-        scope_type=scope_type,
-        scope_id=scope_id,
+    # 11. Build blocked venue, lecturer, and cohort commitments from published timetables
+    blocked_venues, blocked_lecturers, blocked_cohorts, external_details = (
+        build_external_commitments_from_db(
+            semester_id=semester_id,
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
     )
 
     return SchedulingProblem(
@@ -440,7 +527,10 @@ def build_scheduling_problem_from_db(
         lecturers_by_course=lecturers_by_course,
         lecturer_details=lecturer_details,
         allowed_venues_by_course=allowed_venues_by_course,
-        blocked_venue_slots=blocked_venue_slots,
+        blocked_venue_slots=blocked_venues,
+        blocked_lecturer_slots=blocked_lecturers,
+        blocked_cohort_slots=blocked_cohorts,
+        external_commitments_details=external_details,
         daily_lecture_limit=3,
         scope_type=scope_type,
         scope_id=scope_id,

@@ -17,6 +17,35 @@ def _slot_is_blocked(slot_id: str, venue_id: int | str, problem: SchedulingProbl
     return blocked_slots is not None and slot_id in blocked_slots
 
 
+def _slot_is_lecturer_blocked(
+    slot_id: str, lecturer_ids: tuple | list | set, problem: SchedulingProblem
+) -> bool:
+    """
+    Returns True if any lecturer assigned to this occurrence is already committed
+    in an external published timetable for this slot.
+    """
+    blocked_lecturers = getattr(problem, "blocked_lecturer_slots", None)
+    if not blocked_lecturers:
+        return False
+    return any(slot_id in blocked_lecturers.get(lid, set()) for lid in lecturer_ids)
+
+
+def _slot_is_cohort_blocked(
+    slot_id: str, student_groups: tuple | list | set, problem: SchedulingProblem
+) -> bool:
+    """
+    Returns True if any student cohort taking this occurrence is already scheduled
+    in an external published timetable for this slot.
+    """
+    blocked_cohorts = getattr(problem, "blocked_cohort_slots", None)
+    if not blocked_cohorts:
+        return False
+    return any(
+        slot_id in blocked_cohorts.get((g.program_id, g.level), set())
+        for g in student_groups
+    )
+
+
 def _any_allowed_venue_free(
     slot_id: str,
     allowed_venue_ids: List[int | str],
@@ -97,13 +126,18 @@ def create_random_individual(problem: SchedulingProblem) -> Chromosome:
         if not allowed_venues:
             allowed_venues = list(problem.venues.keys())
 
-        # Prefer slots where at least one allowed venue is not pre-blocked
+        # Prefer slots where:
+        # a) at least one allowed venue is not pre-blocked
+        # b) no assigned lecturer is pre-blocked in this slot
+        # c) no student cohort is pre-blocked in this slot
         unblocked_slots = [
             s for s in problem.valid_slots
             if any(
                 not _slot_is_blocked(s.slot_id, vid, problem)
                 for vid in allowed_venues
             )
+            and not _slot_is_lecturer_blocked(s.slot_id, occ.lecturer_ids, problem)
+            and not _slot_is_cohort_blocked(s.slot_id, occ.student_groups, problem)
         ]
         candidate_slots = unblocked_slots if unblocked_slots else list(problem.valid_slots)
         slot = random.choice(candidate_slots)
@@ -173,21 +207,21 @@ def create_heuristic_individual(problem: SchedulingProblem) -> Chromosome:
         cohort_free_slots = []
 
         for s in candidate_slots:
-            # Check student group clashes
+            # Check student group clashes (intra-chromosome and external published)
             has_group_conflict = any(
                 f"{grp.group_id}_{s.slot_id}" in group_occupied_slots
                 for grp in occ.student_groups
-            )
+            ) or _slot_is_cohort_blocked(s.slot_id, occ.student_groups, problem)
             if has_group_conflict:
                 continue
 
             cohort_free_slots.append(s)
 
-            # Check lecturer clashes
+            # Check lecturer clashes (intra-chromosome and external published)
             has_lec_conflict = any(
                 f"{lid}_{s.slot_id}" in lecturer_occupied_slots
                 for lid in occ.lecturer_ids
-            )
+            ) or _slot_is_lecturer_blocked(s.slot_id, occ.lecturer_ids, problem)
             if not has_lec_conflict:
                 cohort_and_lec_free_slots.append(s)
 
