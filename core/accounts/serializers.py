@@ -58,6 +58,12 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         if instance.department:
             data["department_id"] = instance.department.id
             data["department"] = instance.department.name
+            if instance.department.faculty:
+                data["faculty_id"] = instance.department.faculty.id
+                data["faculty_name"] = instance.department.faculty.name
+                if instance.department.faculty.school:
+                    data["school_id"] = instance.department.faculty.school.id
+                    data["school_name"] = instance.department.faculty.school.name
         if instance.program:
             data["program_id"] = instance.program.id
             data["program"] = instance.program.name
@@ -186,6 +192,12 @@ class LecturerProfileSerializer(serializers.ModelSerializer):
         if instance.department:
             data["department_id"] = instance.department.id
             data["department"] = instance.department.name
+            if instance.department.faculty:
+                data["faculty_id"] = instance.department.faculty.id
+                data["faculty_name"] = instance.department.faculty.name
+                if instance.department.faculty.school:
+                    data["school_id"] = instance.department.faculty.school.id
+                    data["school_name"] = instance.department.faculty.school.name
         return data
 
     def validate(self, attrs):
@@ -286,6 +298,12 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             data["department_id"] = instance.scope_department.id
             data["department_name"] = instance.scope_department.name
             data["department"] = instance.scope_department.name
+            if instance.scope_department.faculty:
+                data["faculty_id"] = instance.scope_department.faculty.id
+                data["faculty_name"] = instance.scope_department.faculty.name
+                if instance.scope_department.faculty.school:
+                    data["school_id"] = instance.scope_department.faculty.school.id
+                    data["school_name"] = instance.scope_department.faculty.school.name
         elif instance.level == "faculty" and instance.scope_faculty:
             scope_id = instance.scope_faculty.id
             scope_name = instance.scope_faculty.name
@@ -293,6 +311,9 @@ class AdminProfileSerializer(serializers.ModelSerializer):
             data["scope_faculty"] = instance.scope_faculty.name
             data["faculty_id"] = instance.scope_faculty.id
             data["faculty_name"] = instance.scope_faculty.name
+            if instance.scope_faculty.school:
+                data["school_id"] = instance.scope_faculty.school.id
+                data["school_name"] = instance.scope_faculty.school.name
         elif instance.level == "school" and instance.scope_school:
             scope_id = instance.scope_school.id
             scope_name = instance.scope_school.name
