@@ -246,3 +246,57 @@ class OptimizerRepairAndCapacityTests(TestCase):
         self.assertEqual(eval_res.venue_conflicts, 0, "Heuristic should not generate venue conflicts")
         self.assertEqual(eval_res.student_conflicts, 0, "Heuristic should not generate student cohort conflicts")
         self.assertEqual(eval_res.lecturer_conflicts, 0, "Heuristic should not generate lecturer conflicts")
+
+    def test_repair_chromosome_resolves_external_blocked_venue_and_cohort(self):
+        """
+        Verifies that repair_chromosome actively relocates assignments that clash
+        with higher-scope / peer-faculty blocked venue-slots or cohort-slots.
+        """
+        from scheduling.optimizer.genetic.algorithm import _identify_conflicted_indices
+
+        slot1 = self.valid_slots[0]  # MO_08:00-10:00
+        slot2 = self.valid_slots[1]  # MO_10:00-12:00
+        grp = StudentGroup(program_id=10, level=100, program_code="PROG1", program_name="Prog 1")
+        occ = CourseOccurrence(
+            occurrence_id="C101-1",
+            course_id=1,
+            course_code="C101",
+            course_title="Course 101",
+            course_type="lecture",
+            occurrence_index=1,
+            total_occurrences=1,
+            expected_students=45,
+            student_groups=[grp],
+            lecturer_ids=[101],
+            allowed_venue_ids=[1, 2],
+        )
+
+        problem = SchedulingProblem(
+            occurrences=[occ],
+            valid_slots=self.valid_slots,
+            venues=self.venues_map,
+            student_conflict_graph={},
+            shared_student_groups={},
+            lecturers_by_course={1: {101}},
+            allowed_venues_by_course={1: [1, 2]},
+            blocked_venue_slots={1: {slot1.slot_id}},  # Venue 1 is blocked in slot 1
+            blocked_cohort_slots={(10, 100): {slot2.slot_id}},  # Cohort is blocked in slot 2
+        )
+
+        # 1. Assignment in blocked venue
+        chrome_blocked_venue = Chromosome([Assignment(occurrence=occ, slot=slot1, venue_id=1)])
+        conflicted_idx = _identify_conflicted_indices(chrome_blocked_venue, problem)
+        self.assertIn(0, conflicted_idx, "_identify_conflicted_indices must flag external blocked venue")
+
+        repaired_v = repair_chromosome(chrome_blocked_venue, problem)
+        eval_v = evaluate(repaired_v.assignments, problem)
+        self.assertEqual(eval_v.pre_existing_conflicts, 0, "repair_chromosome must resolve blocked venue clash")
+
+        # 2. Assignment in blocked cohort slot
+        chrome_blocked_cohort = Chromosome([Assignment(occurrence=occ, slot=slot2, venue_id=2)])
+        conflicted_cohort_idx = _identify_conflicted_indices(chrome_blocked_cohort, problem)
+        self.assertIn(0, conflicted_cohort_idx, "_identify_conflicted_indices must flag external blocked cohort")
+
+        repaired_c = repair_chromosome(chrome_blocked_cohort, problem)
+        eval_c = evaluate(repaired_c.assignments, problem)
+        self.assertEqual(eval_c.pre_existing_conflicts, 0, "repair_chromosome must resolve blocked cohort clash")

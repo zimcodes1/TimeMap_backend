@@ -1,6 +1,7 @@
 import copy
 import datetime
 import time
+from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from django.db.models import IntegerField, Q, Sum, Value
@@ -137,13 +138,44 @@ def generate_school_timetable_decomposed(
     faculty_metrics: List[Dict[str, Any]] = []
 
     # -------------------------------------------------------------------------
-    # STEP 0: Institutional Core / GST General Courses
+    # STEP 0: Institutional Core / GST & Multi-Faculty Cross-Cutting Courses
     # -------------------------------------------------------------------------
+    # 1. All GST courses (General Studies) and School/General level courses
+    core_filter = (
+        Q(code__startswith="GST")
+        | Q(owning_level__in=[Course.OwningLevel.GENERAL, Course.OwningLevel.SCHOOL])
+    )
+
+    # 2. Multi-faculty cross-cutting courses (e.g. ECO101) with extensive cross-faculty grants
+    from courses.models import CourseAccessGrant
+
+    grant_fac_counts: Dict[int, Set[int]] = defaultdict(set)
+    for g in CourseAccessGrant.objects.filter(
+        status="approved",
+        course__semester=semester,
+    ).select_related("course"):
+        cid = g.course_id
+        if g.course.owning_faculty_id:
+            grant_fac_counts[cid].add(g.course.owning_faculty_id)
+        if g.granted_to_faculty_id:
+            grant_fac_counts[cid].add(g.granted_to_faculty_id)
+        if g.granted_to_department_id and getattr(g.granted_to_department, "faculty_id", None):
+            grant_fac_counts[cid].add(g.granted_to_department.faculty_id)
+
+    # Courses shared across >= 3 faculties, or cross-faculty courses owned by downstream faculties
+    largest_fac_id = faculties[0].id if faculties else None
+    multi_faculty_anchor_ids = {
+        cid for cid, facs in grant_fac_counts.items()
+        if len(facs) >= 3 or (len(facs) >= 2 and Course.objects.filter(id=cid).exclude(owning_faculty_id=largest_fac_id).exists())
+    }
+
     core_courses_qs = Course.objects.filter(
-        Q(owning_school_id=school_id) | Q(owning_school__isnull=True),
-        owning_level__in=[Course.OwningLevel.GENERAL, Course.OwningLevel.SCHOOL],
-        owning_faculty__isnull=True,
-    ).filter(Q(semester=semester) | Q(semester__isnull=True)).distinct()
+        core_filter | Q(id__in=multi_faculty_anchor_ids)
+    ).filter(
+        Q(owning_school_id=school_id) | Q(owning_school__isnull=True)
+    ).filter(
+        Q(semester=semester) | Q(semester__isnull=True)
+    ).distinct()
 
     core_course_count = core_courses_qs.count()
     if core_course_count > 0:
@@ -153,7 +185,7 @@ def generate_school_timetable_decomposed(
                 "step": 0,
                 "totalSteps": total_steps,
                 "percent": 5,
-                "message": f"Scheduling {core_course_count} University Core / GST courses...",
+                "message": f"Scheduling {core_course_count} University Core & Shared Multi-Faculty anchor courses...",
                 "faculties": faculty_summary_list,
             })
 
@@ -185,16 +217,20 @@ def generate_school_timetable_decomposed(
                     scope_name=school_name,
                     semester_id=semester.id,
                 )
-                core_config = OptimizerConfig(
-                    population_size=40,
-                    max_generations=30,
-                    patience=10,
-                )
+                core_config = _tune_faculty_config(len(core_occurrences), user_config=config)
                 core_result = generate_timetable(mini_problem, config=core_config)
 
                 for item in core_result.assignments_payload:
-                    item["faculty_id"] = None
-                    item["faculty_name"] = "University Core"
+                    cid = item.get("course_id")
+                    course_obj = Course.objects.filter(id=cid).select_related("owning_faculty").first()
+                    if course_obj and course_obj.owning_faculty:
+                        item["faculty_id"] = course_obj.owning_faculty.id
+                        item["faculty_name"] = course_obj.owning_faculty.name
+                        item["faculty_code"] = course_obj.owning_faculty.code
+                    else:
+                        item["faculty_id"] = None
+                        item["faculty_name"] = "University Core"
+                        item["faculty_code"] = "CORE"
                     all_assignments_payload.append(item)
 
                 for a in core_result.assignments:

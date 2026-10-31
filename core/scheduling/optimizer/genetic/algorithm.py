@@ -87,6 +87,36 @@ def _identify_conflicted_indices(
                     conflicted.add(idx1)
                     conflicted.add(idx2)
 
+    # 3. Pre-existing external clashes (ancestor / peer faculty commitments)
+    has_blocked_venues = bool(getattr(problem, "blocked_venue_slots", None))
+    has_blocked_cohorts = bool(getattr(problem, "blocked_cohort_slots", None))
+    has_blocked_lecturers = bool(getattr(problem, "blocked_lecturer_slots", None))
+
+    if has_blocked_venues or has_blocked_cohorts or has_blocked_lecturers:
+        for idx, a in enumerate(assignments):
+            if idx in conflicted:
+                continue
+            sid = a.slot.slot_id
+            if has_blocked_venues:
+                b_venues = problem.blocked_venue_slots.get(a.venue_id)
+                if b_venues and sid in b_venues:
+                    conflicted.add(idx)
+                    continue
+            if has_blocked_cohorts:
+                if any(
+                    sid in problem.blocked_cohort_slots.get((grp.program_id, grp.level), set())
+                    for grp in a.occurrence.student_groups
+                ):
+                    conflicted.add(idx)
+                    continue
+            if has_blocked_lecturers:
+                if any(
+                    sid in problem.blocked_lecturer_slots.get(lid, set())
+                    for lid in a.occurrence.lecturer_ids
+                ):
+                    conflicted.add(idx)
+                    continue
+
     return list(conflicted)
 
 

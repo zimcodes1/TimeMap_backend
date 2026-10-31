@@ -103,7 +103,11 @@ def repair_chromosome(
                 allowed = list(problem.venues.keys())
 
             occupied_here = slot_occupied_venues[slot_id]
-            free_in_slot = [vid for vid in allowed if vid not in occupied_here]
+            blocked_venues = getattr(problem, "blocked_venue_slots", {}) or {}
+            free_in_slot = [
+                vid for vid in allowed
+                if vid not in occupied_here and slot_id not in blocked_venues.get(vid, set())
+            ]
 
             if free_in_slot:
                 # Find best-fit among free venues in the same slot
@@ -125,7 +129,6 @@ def repair_chromosome(
                 random.shuffle(alt_slots)
 
                 relocated = False
-                blocked_venues = getattr(problem, "blocked_venue_slots", {}) or {}
                 for candidate_slot in alt_slots:
                     free_venues = [
                         vid
@@ -163,6 +166,68 @@ def repair_chromosome(
                         venue_id=new_vid,
                     )
                     repaired = True
+
+    # -------------------------------------------------------------
+    # 3b. Resolve external blocked venue collisions
+    # -------------------------------------------------------------
+    blocked_venues = getattr(problem, "blocked_venue_slots", {}) or {}
+    if blocked_venues:
+        for idx in range(len(assignments)):
+            a = assignments[idx]
+            sid = a.slot.slot_id
+            b_set = blocked_venues.get(a.venue_id)
+            if b_set and sid in b_set:
+                occ = a.occurrence
+                allowed = problem.allowed_venues_by_course.get(occ.course_id, [])
+                if not allowed:
+                    allowed = list(problem.venues.keys())
+
+                occupied_here = slot_occupied_venues[sid]
+                free_in_slot = [
+                    vid for vid in allowed
+                    if vid not in occupied_here and sid not in blocked_venues.get(vid, set())
+                ]
+                if free_in_slot:
+                    new_vid = pick_best_fit_venue(
+                        expected_students=occ.expected_students,
+                        allowed_venue_ids=free_in_slot,
+                        venues=problem.venues,
+                    )
+                    slot_occupied_venues[sid].discard(a.venue_id)
+                    slot_occupied_venues[sid].add(new_vid)
+                    assignments[idx] = Assignment(occurrence=occ, slot=a.slot, venue_id=new_vid)
+                    repaired = True
+                else:
+                    used_days = {
+                        assignments[k].slot.day
+                        for k in course_indices.get(a.course_id, [])
+                        if k != idx
+                    }
+                    alt_slots = [
+                        s for s in problem.valid_slots
+                        if s.slot_id != sid and s.day not in used_days
+                    ]
+                    if not alt_slots:
+                        alt_slots = [s for s in problem.valid_slots if s.slot_id != sid]
+                    random.shuffle(alt_slots)
+
+                    for candidate_slot in alt_slots:
+                        free_venues = [
+                            vid for vid in allowed
+                            if vid not in slot_occupied_venues[candidate_slot.slot_id]
+                            and candidate_slot.slot_id not in blocked_venues.get(vid, set())
+                        ]
+                        if free_venues:
+                            new_vid = pick_best_fit_venue(
+                                expected_students=occ.expected_students,
+                                allowed_venue_ids=free_venues,
+                                venues=problem.venues,
+                            )
+                            slot_occupied_venues[sid].discard(a.venue_id)
+                            slot_occupied_venues[candidate_slot.slot_id].add(new_vid)
+                            assignments[idx] = Assignment(occurrence=occ, slot=candidate_slot, venue_id=new_vid)
+                            repaired = True
+                            break
 
     # -------------------------------------------------------------
     # 4. Resolve student cohort conflicts in the same slot
@@ -242,6 +307,68 @@ def repair_chromosome(
                     repaired = True
 
     # -------------------------------------------------------------
+    # 4b. Resolve external blocked student cohort collisions
+    # -------------------------------------------------------------
+    blocked_cohorts = getattr(problem, "blocked_cohort_slots", {}) or {}
+    if blocked_cohorts:
+        curr_slot_occs: Dict[str, List[int]] = defaultdict(list)
+        for i, a in enumerate(assignments):
+            curr_slot_occs[a.slot.slot_id].append(i)
+
+        for idx in range(len(assignments)):
+            a = assignments[idx]
+            sid = a.slot.slot_id
+            is_blocked = any(
+                sid in blocked_cohorts.get((grp.program_id, grp.level), set())
+                for grp in a.occurrence.student_groups
+            )
+            if is_blocked:
+                occ = a.occurrence
+                allowed_vids = problem.allowed_venues_by_course.get(occ.course_id, list(problem.venues.keys()))
+                used_days = {
+                    assignments[k].slot.day
+                    for k in course_indices.get(a.course_id, [])
+                    if k != idx
+                }
+                alt_slots = [
+                    s for s in problem.valid_slots
+                    if s.slot_id != sid and s.day not in used_days
+                ]
+                if not alt_slots:
+                    alt_slots = [s for s in problem.valid_slots if s.slot_id != sid]
+                random.shuffle(alt_slots)
+
+                for s in alt_slots:
+                    current_in_s = curr_slot_occs.get(s.slot_id, [])
+                    intra_clash = any(
+                        assignments[k].course_id in problem.student_conflict_graph.get(a.course_id, set())
+                        for k in current_in_s
+                    )
+                    ext_clash = any(
+                        s.slot_id in blocked_cohorts.get((grp.program_id, grp.level), set())
+                        for grp in occ.student_groups
+                    )
+                    if not intra_clash and not ext_clash:
+                        free_vids = [
+                            vid for vid in allowed_vids
+                            if vid not in slot_occupied_venues[s.slot_id]
+                            and s.slot_id not in blocked_venues.get(vid, set())
+                        ]
+                        if free_vids:
+                            new_vid = pick_best_fit_venue(
+                                expected_students=occ.expected_students,
+                                allowed_venue_ids=free_vids,
+                                venues=problem.venues,
+                            )
+                            curr_slot_occs[sid].remove(idx)
+                            curr_slot_occs[s.slot_id].append(idx)
+                            slot_occupied_venues[sid].discard(a.venue_id)
+                            slot_occupied_venues[s.slot_id].add(new_vid)
+                            assignments[idx] = Assignment(occurrence=occ, slot=s, venue_id=new_vid)
+                            repaired = True
+                            break
+
+    # -------------------------------------------------------------
     # 5. Resolve lecturer double-bookings in the same slot
     # -------------------------------------------------------------
     slot_assignments = defaultdict(list)
@@ -303,6 +430,68 @@ def repair_chromosome(
                         )
                         repaired = True
                         break
+
+    # -------------------------------------------------------------
+    # 5b. Resolve external blocked lecturer collisions
+    # -------------------------------------------------------------
+    blocked_lecturers = getattr(problem, "blocked_lecturer_slots", {}) or {}
+    if blocked_lecturers:
+        curr_slot_occs = defaultdict(list)
+        for i, a in enumerate(assignments):
+            curr_slot_occs[a.slot.slot_id].append(i)
+
+        for idx in range(len(assignments)):
+            a = assignments[idx]
+            sid = a.slot.slot_id
+            is_blocked = any(
+                sid in blocked_lecturers.get(lid, set())
+                for lid in a.occurrence.lecturer_ids
+            )
+            if is_blocked:
+                occ = a.occurrence
+                allowed_vids = problem.allowed_venues_by_course.get(occ.course_id, list(problem.venues.keys()))
+                used_days = {
+                    assignments[k].slot.day
+                    for k in course_indices.get(a.course_id, [])
+                    if k != idx
+                }
+                alt_slots = [
+                    s for s in problem.valid_slots
+                    if s.slot_id != sid and s.day not in used_days
+                ]
+                if not alt_slots:
+                    alt_slots = [s for s in problem.valid_slots if s.slot_id != sid]
+                random.shuffle(alt_slots)
+
+                for s in alt_slots:
+                    current_in_s = curr_slot_occs.get(s.slot_id, [])
+                    intra_clash = any(
+                        any(lid in assignments[k].occurrence.lecturer_ids for lid in occ.lecturer_ids)
+                        for k in current_in_s
+                    )
+                    ext_clash = any(
+                        s.slot_id in blocked_lecturers.get(lid, set())
+                        for lid in occ.lecturer_ids
+                    )
+                    if not intra_clash and not ext_clash:
+                        free_vids = [
+                            vid for vid in allowed_vids
+                            if vid not in slot_occupied_venues[s.slot_id]
+                            and s.slot_id not in blocked_venues.get(vid, set())
+                        ]
+                        if free_vids:
+                            new_vid = pick_best_fit_venue(
+                                expected_students=occ.expected_students,
+                                allowed_venue_ids=free_vids,
+                                venues=problem.venues,
+                            )
+                            curr_slot_occs[sid].remove(idx)
+                            curr_slot_occs[s.slot_id].append(idx)
+                            slot_occupied_venues[sid].discard(a.venue_id)
+                            slot_occupied_venues[s.slot_id].add(new_vid)
+                            assignments[idx] = Assignment(occurrence=occ, slot=s, venue_id=new_vid)
+                            repaired = True
+                            break
 
     # -------------------------------------------------------------
     # 6. Smooth cohort daily distribution to stay within daily limits
@@ -408,10 +597,10 @@ def final_repair_pass(
         repaired_chrome = repair_chromosome(current_chrome, problem)
         new_eval = evaluate(repaired_chrome.assignments, problem)
 
-        if new_eval.hard_conflicts < best_eval.hard_conflicts:
+        if new_eval.lexicographic_rank < best_eval.lexicographic_rank:
             current_chrome = repaired_chrome
             best_eval = new_eval
-        elif new_eval.hard_conflicts == best_eval.hard_conflicts and new_eval.capacity_penalty < best_eval.capacity_penalty:
+        elif new_eval.lexicographic_rank == best_eval.lexicographic_rank and new_eval.total_weighted_penalty < best_eval.total_weighted_penalty:
             current_chrome = repaired_chrome
             best_eval = new_eval
 
@@ -422,12 +611,16 @@ def final_repair_pass(
         assignments = list(current_chrome.assignments)
         conflict_resolved = False
 
+        blocked_venues = getattr(problem, "blocked_venue_slots", {}) or {}
+        blocked_cohorts = getattr(problem, "blocked_cohort_slots", {}) or {}
+        blocked_lecs = getattr(problem, "blocked_lecturer_slots", {}) or {}
+
         # Group assignments by slot
         slot_map: Dict[str, List[int]] = defaultdict(list)
         for i, a in enumerate(assignments):
             slot_map[a.slot.slot_id].append(i)
 
-        # 1. Resolve any remaining venue clashes
+        # 1. Resolve any remaining venue clashes (intra-chromosome and external)
         slot_venue_occupancy: Dict[Tuple[str, int | str], List[int]] = defaultdict(list)
         for i, a in enumerate(assignments):
             slot_venue_occupancy[(a.slot.slot_id, a.venue_id)].append(i)
@@ -457,7 +650,11 @@ def final_repair_pass(
                         assignments[k].course_id in conflicting_cids
                         for k in slot_map.get(candidate_slot.slot_id, [])
                     )
-                    if has_stu_clash:
+                    has_ext_cohort = any(
+                        candidate_slot.slot_id in blocked_cohorts.get((grp.program_id, grp.level), set())
+                        for grp in occ.student_groups
+                    )
+                    if has_stu_clash or has_ext_cohort:
                         continue
 
                     # Check lecturer clashes in candidate slot
@@ -465,27 +662,108 @@ def final_repair_pass(
                         any(lid in assignments[k].occurrence.lecturer_ids for lid in occ.lecturer_ids)
                         for k in slot_map.get(candidate_slot.slot_id, [])
                     )
-                    if has_lec_clash:
+                    has_ext_lec = any(
+                        candidate_slot.slot_id in blocked_lecs.get(lid, set())
+                        for lid in occ.lecturer_ids
+                    )
+                    if has_lec_clash or has_ext_lec:
                         continue
 
                     # Check venue availability in candidate slot
                     occupied_in_cand = {
                         assignments[k].venue_id for k in slot_map.get(candidate_slot.slot_id, [])
                     }
-                    free_allowed = [vid for vid in allowed if vid not in occupied_in_cand]
+                    free_allowed = [
+                        vid for vid in allowed
+                        if vid not in occupied_in_cand
+                        and candidate_slot.slot_id not in blocked_venues.get(vid, set())
+                    ]
                     if free_allowed:
                         best_vid = pick_best_fit_venue(
                             expected_students=occ.expected_students,
                             allowed_venue_ids=free_allowed,
                             venues=problem.venues,
                         )
-                        assignments[move_idx] = Assignment(
+                        test_assignments = list(assignments)
+                        test_assignments[move_idx] = Assignment(
                             occurrence=occ,
                             slot=candidate_slot,
                             venue_id=best_vid,
                         )
-                        conflict_resolved = True
-                        break
+                        test_eval = evaluate(test_assignments, problem)
+                        if test_eval.lexicographic_rank < best_eval.lexicographic_rank:
+                            assignments = test_assignments
+                            current_chrome = Chromosome(assignments)
+                            best_eval = test_eval
+                            conflict_resolved = True
+                            break
+
+        # 2. Targeted greedy resolution for occurrence same-day duplicates
+        course_days: Dict[Tuple[int | str, str], List[int]] = defaultdict(list)
+        for i, a in enumerate(assignments):
+            course_days[(a.course_id, a.slot.day)].append(i)
+
+        for (cid, day), day_indices in course_days.items():
+            if len(day_indices) > 1:
+                move_idx = day_indices[1]
+                a = assignments[move_idx]
+                occ = a.occurrence
+                allowed = problem.allowed_venues_by_course.get(occ.course_id, list(problem.venues.keys()))
+                used_days = {assignments[k].slot.day for k in day_indices}
+                alt_slots = [s for s in problem.valid_slots if s.day not in used_days]
+                random.shuffle(alt_slots)
+
+                for candidate_slot in alt_slots:
+                    conflicting_cids = problem.student_conflict_graph.get(a.course_id, set())
+                    has_stu_clash = any(
+                        assignments[k].course_id in conflicting_cids
+                        for k in slot_map.get(candidate_slot.slot_id, [])
+                    )
+                    has_ext_cohort = any(
+                        candidate_slot.slot_id in blocked_cohorts.get((grp.program_id, grp.level), set())
+                        for grp in occ.student_groups
+                    )
+                    if has_stu_clash or has_ext_cohort:
+                        continue
+
+                    has_lec_clash = any(
+                        any(lid in assignments[k].occurrence.lecturer_ids for lid in occ.lecturer_ids)
+                        for k in slot_map.get(candidate_slot.slot_id, [])
+                    )
+                    has_ext_lec = any(
+                        candidate_slot.slot_id in blocked_lecs.get(lid, set())
+                        for lid in occ.lecturer_ids
+                    )
+                    if has_lec_clash or has_ext_lec:
+                        continue
+
+                    occupied_in_cand = {
+                        assignments[k].venue_id for k in slot_map.get(candidate_slot.slot_id, [])
+                    }
+                    free_allowed = [
+                        vid for vid in allowed
+                        if vid not in occupied_in_cand
+                        and candidate_slot.slot_id not in blocked_venues.get(vid, set())
+                    ]
+                    if free_allowed:
+                        best_vid = pick_best_fit_venue(
+                            expected_students=occ.expected_students,
+                            allowed_venue_ids=free_allowed,
+                            venues=problem.venues,
+                        )
+                        test_assignments = list(assignments)
+                        test_assignments[move_idx] = Assignment(
+                            occurrence=occ,
+                            slot=candidate_slot,
+                            venue_id=best_vid,
+                        )
+                        test_eval = evaluate(test_assignments, problem)
+                        if test_eval.lexicographic_rank < best_eval.lexicographic_rank:
+                            assignments = test_assignments
+                            current_chrome = Chromosome(assignments)
+                            best_eval = test_eval
+                            conflict_resolved = True
+                            break
 
         if conflict_resolved:
             current_chrome = Chromosome(assignments)
