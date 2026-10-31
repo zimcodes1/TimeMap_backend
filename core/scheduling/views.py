@@ -1,4 +1,7 @@
 from datetime import date
+import json
+import threading
+import time
 from typing import Any, Dict, Optional
 from accounts.permissions import (
     IsAdminUserRole,
@@ -9,7 +12,7 @@ from accounts.permissions import (
 )
 from accounts.models import AdminOfficer
 from django.db.models import Q
-from django.http import HttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
@@ -29,6 +32,7 @@ from .models import (
     TimetableEntry,
     TimetableGenerationRun,
 )
+from .optimizer.decomposed_generator import generate_school_timetable_decomposed
 from .optimizer.generator import generate_timetable
 from .optimizer.genetic.algorithm import OptimizerConfig
 from .optimizer.preprocessing.export import (
@@ -1459,7 +1463,26 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
         if not is_allowed:
             return Response({"error": reason}, status=status.HTTP_403_FORBIDDEN)
 
-        # Build problem
+        # Execute optimization
+        if scope_type == "school":
+            cfg = infer_optimizer_config_for_scope(
+                scope_type="school",
+                total_occurrences=0,
+                data=data,
+            )
+            run = generate_school_timetable_decomposed(
+                semester=semester,
+                school_id=scope_id,
+                config=cfg,
+                initiated_by=request.user,
+                publish_immediately=data.get("publish_immediately", False),
+            )
+            return Response(
+                TimetableGenerationRunDetailSerializer(run).data,
+                status=status.HTTP_200_OK,
+            )
+
+        # Build problem for faculty / department scope
         try:
             problem = build_scheduling_problem_from_db(
                 semester_id=semester_id,
@@ -1519,6 +1542,171 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
             TimetableGenerationRunDetailSerializer(run).data,
             status=status.HTTP_200_OK,
         )
+
+    @extend_schema(
+        summary="Generate a timetable with live Server-Sent Events (SSE) progress streaming",
+        request=GenerateTimetableRequestSerializer,
+    )
+    @action(detail=False, methods=["post"], url_path="stream")
+    def stream(self, request):
+        serializer = GenerateTimetableRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        semester_id = data["semester_id"]
+        scope_type = data["scope_type"]
+        scope_id = data["scope_id"]
+
+        semester = Semester.objects.filter(id=semester_id).select_related("session__school").first()
+        if not semester:
+            return Response({"error": "Semester not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        is_allowed, reason = check_scope_generation_permission(request.user, semester, scope_type, scope_id)
+        if not is_allowed:
+            return Response({"error": reason}, status=status.HTTP_403_FORBIDDEN)
+
+        user = request.user
+        publish_immediately = data.get("publish_immediately", False)
+
+        def event_stream():
+            queue: list = []
+
+            def progress_cb(evt: dict):
+                queue.append(evt)
+
+            if scope_type == "school":
+                run_holder: dict = {}
+                error_holder: dict = {}
+
+                def target():
+                    try:
+                        cfg = infer_optimizer_config_for_scope(
+                            scope_type="school",
+                            total_occurrences=0,
+                            data=data,
+                        )
+                        run = generate_school_timetable_decomposed(
+                            semester=semester,
+                            school_id=scope_id,
+                            config=cfg,
+                            progress_callback=progress_cb,
+                            initiated_by=user,
+                            publish_immediately=publish_immediately,
+                        )
+                        run_holder["run"] = run
+                    except Exception as exc:
+                        error_holder["error"] = str(exc)
+                    finally:
+                        from django.db import connection
+                        connection.close()
+
+                t = threading.Thread(target=target)
+                t.start()
+
+                while t.is_alive() or queue:
+                    if queue:
+                        while queue:
+                            evt = queue.pop(0)
+                            yield f"data: {json.dumps(evt)}\n\n"
+                    else:
+                        time.sleep(0.08)
+
+                t.join()
+                if error_holder:
+                    yield f"data: {json.dumps({'stage': 'error', 'message': error_holder['error']})}\n\n"
+            else:
+                try:
+                    problem = build_scheduling_problem_from_db(
+                        semester_id=semester_id,
+                        scope_type=scope_type,
+                        scope_id=scope_id,
+                    )
+                    total_occ = len(problem.occurrences)
+                    yield f"data: {json.dumps({'stage': 'init', 'percent': 10, 'message': f'Preparing {scope_type.capitalize()} schedule ({total_occ} occurrences)...'})}\n\n"
+
+                    cfg = infer_optimizer_config_for_scope(
+                        scope_type=scope_type,
+                        total_occurrences=total_occ,
+                        data=data,
+                    )
+
+                    def ga_cb(gen, max_gen, best_eval):
+                        pct = min(95, 10 + int((gen / max_gen) * 85))
+                        yield_data = {
+                            "stage": "faculty",
+                            "percent": pct,
+                            "step": gen,
+                            "totalSteps": max_gen,
+                            "message": f"Generation {gen}/{max_gen} — Hard conflicts: {best_eval.hard_conflicts}",
+                        }
+                        queue.append(yield_data)
+
+                    run_holder = {}
+                    error_holder = {}
+
+                    def target_single():
+                        try:
+                            result = generate_timetable(problem, config=cfg, progress_callback=ga_cb)
+                            now = datetime.datetime.now(datetime.timezone.utc)
+                            run = TimetableGenerationRun.objects.create(
+                                semester=semester,
+                                scope_type=scope_type,
+                                scope_id=scope_id,
+                                scope_name=problem.scope_name,
+                                status=TimetableGenerationRun.Status.COMPLETED,
+                                result_status=result.status.lower(),
+                                hard_conflicts_count=result.hard_conflicts_count,
+                                student_conflicts_count=result.evaluation.student_conflicts,
+                                lecturer_conflicts_count=result.evaluation.lecturer_conflicts,
+                                venue_conflicts_count=result.evaluation.venue_conflicts,
+                                daily_limit_violations_count=result.evaluation.daily_limit_violations,
+                                occurrence_day_violations_count=result.evaluation.occurrence_day_violations,
+                                capacity_penalty=result.evaluation.capacity_penalty,
+                                fitness_score=result.fitness,
+                                conflict_report=result.conflict_report,
+                                generation_metrics={
+                                    "generations_run": result.generation_count,
+                                    "runtime_seconds": result.runtime_seconds,
+                                    "elapsed_seconds": result.runtime_seconds,
+                                    "occurrences_total": problem.total_occurrences,
+                                },
+                                assignments_payload=result.assignments_payload,
+                                initiated_by=user,
+                                completed_at=now,
+                            )
+                            if publish_immediately:
+                                publish_generation_run(run, created_by_admin=user)
+                            run_holder["run"] = run
+                        except Exception as e:
+                            error_holder["error"] = str(e)
+                        finally:
+                            from django.db import connection
+                            connection.close()
+
+                    t2 = threading.Thread(target=target_single)
+                    t2.start()
+
+                    while t2.is_alive() or queue:
+                        if queue:
+                            while queue:
+                                evt = queue.pop(0)
+                                yield f"data: {json.dumps(evt)}\n\n"
+                        else:
+                            time.sleep(0.08)
+
+                    t2.join()
+                    if error_holder:
+                        yield f"data: {json.dumps({'stage': 'error', 'message': error_holder['error']})}\n\n"
+                    elif "run" in run_holder:
+                        r = run_holder["run"]
+                        yield f"data: {json.dumps({'stage': 'complete', 'percent': 100, 'message': 'Timetable generated successfully!', 'runId': str(r.id), 'run': TimetableGenerationRunDetailSerializer(r).data})}\n\n"
+                except Exception as e:
+                    yield f"data: {json.dumps({'stage': 'error', 'message': str(e)})}\n\n"
+
+        response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"
+        return response
 
     @extend_schema(summary="List past timetable generation runs", responses={200: TimetableGenerationRunSerializer(many=True)})
     @action(detail=False, methods=["get"], url_path="runs")
