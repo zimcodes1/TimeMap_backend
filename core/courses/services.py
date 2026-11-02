@@ -38,7 +38,6 @@ def get_visible_courses_for_student(student, semester=None):
     # 2. Default ownership matches
     default_q = (
         Q(owning_level=Course.OwningLevel.GENERAL)
-        | Q(code__startswith="GST")
         | (Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department=dept) & program_filter)
         | Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty=fac)
         | Q(owning_level=Course.OwningLevel.SCHOOL, owning_school=sch)
@@ -129,9 +128,6 @@ def get_course_attributed_programs(course, hierarchy_ctx=None):
                 attributed_programs.update(depts_programs.get(d_id, []))
         elif course.owning_level == Course.OwningLevel.GENERAL:
             attributed_programs.update(all_program_ids)
-
-    if course.code and course.code.strip().upper().startswith("GST"):
-        attributed_programs.update(all_program_ids)
 
     # 2. Approved access grants
     if hasattr(course, "_prefetched_objects_cache") and "access_grants" in course._prefetched_objects_cache:

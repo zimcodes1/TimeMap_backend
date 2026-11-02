@@ -101,6 +101,8 @@ class CourseSerializer(serializers.ModelSerializer):
 
         # Check if course is owned by the user's scope or granted to it
         is_granted_to_scope = False
+        scope_grant_id = None
+        active_grants_data = []
         can_edit_exam_settings = False
         request = self.context.get("request")
         if request and request.user and request.user.is_authenticated:
@@ -129,30 +131,40 @@ class CourseSerializer(serializers.ModelSerializer):
                 elif user.is_superuser:
                     is_owned = True
 
-                # Check if course was explicitly granted to this scope via CourseAccessGrant
-                if not is_owned:
-                    granted_ids = getattr(request, "_cached_granted_course_ids", None)
-                    if granted_ids is None:
-                        from django.db.models import Q
-                        grant_q = Q()
-                        if level == "department" and admin_prof.scope_department_id:
-                            grant_q = Q(granted_to_department_id=admin_prof.scope_department_id)
-                        elif level == "faculty" and admin_prof.scope_faculty_id:
-                            grant_q = Q(granted_to_faculty_id=admin_prof.scope_faculty_id)
-                        elif level == "school" and admin_prof.scope_school_id:
-                            grant_q = Q(granted_to_school_id=admin_prof.scope_school_id)
-                        if grant_q:
-                            granted_ids = set(
-                                CourseAccessGrant.objects.filter(
-                                    grant_q, status=CourseAccessGrant.Status.APPROVED
-                                ).values_list("course_id", flat=True)
+                for grant in instance.access_grants.all():
+                    if grant.status == CourseAccessGrant.Status.APPROVED:
+                        if is_owned:
+                            recipient_label = (
+                                (grant.granted_to_department.name if grant.granted_to_department else "")
+                                or (grant.granted_to_faculty.name if grant.granted_to_faculty else "")
+                                or (grant.granted_to_school.name if grant.granted_to_school else "")
+                                or "All Scopes"
                             )
+                            active_grants_data.append({
+                                "id": grant.id,
+                                "granted_to_level": grant.granted_to_level,
+                                "granted_to_department_id": grant.granted_to_department_id,
+                                "granted_to_department_name": grant.granted_to_department.name if grant.granted_to_department else None,
+                                "granted_to_faculty_id": grant.granted_to_faculty_id,
+                                "granted_to_faculty_name": grant.granted_to_faculty.name if grant.granted_to_faculty else None,
+                                "granted_to_school_id": grant.granted_to_school_id,
+                                "granted_to_school_name": grant.granted_to_school.name if grant.granted_to_school else None,
+                                "grant_scope": grant.grant_scope,
+                                "target_program_id": grant.target_program_id,
+                                "target_program_name": grant.target_program.name if grant.target_program else None,
+                                "recipient_label": recipient_label,
+                                "status": grant.status,
+                            })
                         else:
-                            granted_ids = set()
-                        setattr(request, "_cached_granted_course_ids", granted_ids)
-                    is_granted_to_scope = instance.id in granted_ids
-                else:
-                    is_granted_to_scope = False
+                            if level == "department" and admin_prof.scope_department_id and grant.granted_to_department_id == admin_prof.scope_department_id:
+                                is_granted_to_scope = True
+                                scope_grant_id = grant.id
+                            elif level == "faculty" and admin_prof.scope_faculty_id and grant.granted_to_faculty_id == admin_prof.scope_faculty_id:
+                                is_granted_to_scope = True
+                                scope_grant_id = grant.id
+                            elif level == "school" and admin_prof.scope_school_id and grant.granted_to_school_id == admin_prof.scope_school_id:
+                                is_granted_to_scope = True
+                                scope_grant_id = grant.id
 
                 has_scope_eo = getattr(request, "_cached_has_scope_eo", None)
                 if has_scope_eo is None:
@@ -177,6 +189,8 @@ class CourseSerializer(serializers.ModelSerializer):
                 can_edit_exam_settings = is_owned and (is_eo or not has_scope_eo)
 
         data["is_granted_to_scope"] = is_granted_to_scope
+        data["scope_grant_id"] = scope_grant_id
+        data["active_grants"] = active_grants_data
         data["can_edit_exam_settings"] = can_edit_exam_settings
         return data
 
@@ -343,6 +357,9 @@ class CourseSerializer(serializers.ModelSerializer):
 class CourseAccessGrantSerializer(serializers.ModelSerializer):
     course_code = serializers.ReadOnlyField(source="course.code")
     course_title = serializers.ReadOnlyField(source="course.title")
+    course_owning_department_name = serializers.ReadOnlyField(source="course.owning_department.name")
+    course_owning_faculty_name = serializers.ReadOnlyField(source="course.owning_faculty.name")
+    course_owning_school_name = serializers.ReadOnlyField(source="course.owning_school.name")
     granted_to_department_name = serializers.ReadOnlyField(source="granted_to_department.name")
     granted_to_faculty_name = serializers.ReadOnlyField(source="granted_to_faculty.name")
     granted_to_school_name = serializers.ReadOnlyField(source="granted_to_school.name")
@@ -357,6 +374,9 @@ class CourseAccessGrantSerializer(serializers.ModelSerializer):
             "course",
             "course_code",
             "course_title",
+            "course_owning_department_name",
+            "course_owning_faculty_name",
+            "course_owning_school_name",
             "granted_to_level",
             "granted_to_department",
             "granted_to_department_name",

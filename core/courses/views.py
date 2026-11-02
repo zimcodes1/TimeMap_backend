@@ -3,13 +3,13 @@ from accounts.permissions import (
     IsPasswordResetDone,
     get_user_scope_departments,
     get_user_scope_faculties,
-    get_user_scope_schools,
 )
 from django.db.models import Q
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -206,6 +206,8 @@ class CourseAccessGrantViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+            return CourseAccessGrant.objects.all()
         dept_qs = get_user_scope_departments(user)
         fac_qs = get_user_scope_faculties(user)
 
@@ -219,6 +221,30 @@ class CourseAccessGrantViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(initiated_by=self.request.user.admin_profile)
+
+    def _user_can_undo_grant(self, user, grant):
+        """
+        Only the admin to which access was granted (the grantee / recipient side)
+        is authorized to undo this access grant.
+        """
+        if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+            return True
+
+        admin_prof = getattr(user, "admin_profile", None)
+        if not admin_prof:
+            return False
+
+        dept_qs = get_user_scope_departments(user)
+        fac_qs = get_user_scope_faculties(user)
+
+        # Must be on the recipient side (the scope to which access was granted)
+        is_recipient = (
+            (grant.granted_to_department_id and grant.granted_to_department in dept_qs)
+            or (grant.granted_to_faculty_id and grant.granted_to_faculty in fac_qs)
+            or (grant.granted_to_school_id and admin_prof.scope_school_id == grant.granted_to_school_id)
+        )
+
+        return bool(is_recipient)
 
     @extend_schema(summary="Approve course access grant", responses={200: CourseAccessGrantSerializer})
     @action(detail=True, methods=["post"])
@@ -239,6 +265,53 @@ class CourseAccessGrantViewSet(viewsets.ModelViewSet):
         grant.decided_at = timezone.now()
         grant.save(update_fields=["status", "decided_by", "decided_at"])
         return Response(CourseAccessGrantSerializer(grant).data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Undo course access grant", responses={200: dict})
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        grant = self.get_object()
+        if not self._user_can_undo_grant(request.user, grant):
+            raise PermissionDenied("Only the admin to which access was granted can undo this grant.")
+
+        course = grant.course
+        course_code = course.code
+        grant_id = grant.id
+
+        recipient_dept = grant.granted_to_department
+        recipient_fac = grant.granted_to_faculty
+
+        # Clean up any timetable entries or lecture sessions created by or targeted to the recipient scope
+        from scheduling.models import LectureSession, TimetableEntry
+
+        entry_cleanup_q = Q(course=course)
+        if recipient_dept:
+            entry_cleanup_q &= (
+                Q(created_by__scope_department=recipient_dept)
+                | Q(target_program__department=recipient_dept)
+            )
+        elif recipient_fac:
+            entry_cleanup_q &= (
+                Q(created_by__scope_faculty=recipient_fac)
+                | Q(target_program__department__faculty=recipient_fac)
+            )
+
+        entries_to_remove = TimetableEntry.objects.filter(entry_cleanup_q)
+        if entries_to_remove.exists():
+            LectureSession.objects.filter(timetable_entry__in=entries_to_remove).delete()
+            entries_to_remove.delete()
+
+        grant.delete()
+        return Response(
+            {"detail": f"Access grant for {course_code} undone successfully.", "id": grant_id},
+            status=status.HTTP_200_OK,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        grant = self.get_object()
+        if grant.status == CourseAccessGrant.Status.APPROVED:
+            if not self._user_can_undo_grant(request.user, grant):
+                raise PermissionDenied("Only the admin to which access was granted can undo this grant.")
+        return super().destroy(request, *args, **kwargs)
 
 
 class CourseRegistrationViewSet(viewsets.ModelViewSet):

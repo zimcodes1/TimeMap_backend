@@ -162,7 +162,6 @@ def build_timetable_scope_q(user, prefix=""):
                 | venue_q
                 | Q(**{f"{p}course__access_grants__granted_to_school_id": sch_id, f"{p}course__access_grants__status": "approved"})
                 | Q(**{f"{p}course__owning_level": "general"})
-                | Q(**{f"{p}course__code__startswith": "GST"})
                 | Q(**{f"{p}entry_type": "event"})
             )
 
@@ -189,7 +188,6 @@ def build_timetable_scope_q(user, prefix=""):
         | Q(**{f"{p}course__access_grants__granted_to_faculty__in": fac_qs, f"{p}course__access_grants__status": "approved"})
         | Q(**{f"{p}course__access_grants__granted_to_school__in": sch_qs, f"{p}course__access_grants__status": "approved"})
         | Q(**{f"{p}course__owning_level": "general"})
-        | Q(**{f"{p}course__code__startswith": "GST"})
         | Q(**{f"{p}entry_type": "event"})
     )
     if p:
@@ -226,7 +224,6 @@ def build_department_timetable_q(department_id, prefix=""):
         | Q(**{f"{p}course__access_grants__granted_to_department_id": department_id, f"{p}course__access_grants__status": "approved"})
         | Q(**{f"{p}course__access_grants__target_program__department_id": department_id, f"{p}course__access_grants__status": "approved"})
         | Q(**{f"{p}course__owning_level": "general"})
-        | Q(**{f"{p}course__code__startswith": "GST"})
     )
     if fac_id:
         q |= (
@@ -264,7 +261,6 @@ def build_faculty_timetable_q(faculty_id, prefix=""):
         | Q(**{f"{p}course__access_grants__granted_to_department__faculty_id": faculty_id, f"{p}course__access_grants__status": "approved"})
         | Q(**{f"{p}course__access_grants__target_program__department__faculty_id": faculty_id, f"{p}course__access_grants__status": "approved"})
         | Q(**{f"{p}course__owning_level": "general"})
-        | Q(**{f"{p}course__code__startswith": "GST"})
     )
     if sch_id:
         q |= (
@@ -315,7 +311,6 @@ def build_program_timetable_q(program_id, prefix=""):
             & (Q(**{f"{p}course__access_grants__target_program_id__isnull": True}) | Q(**{f"{p}course__access_grants__target_program_id": program_id}))
         )
         | Q(**{f"{p}course__owning_level": "general"})
-        | Q(**{f"{p}course__code__startswith": "GST"})
     )
     if fac_id:
         q |= (

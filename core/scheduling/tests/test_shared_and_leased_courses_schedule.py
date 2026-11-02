@@ -276,3 +276,54 @@ class SharedAndLeasedCoursesScheduleTests(APITestCase):
         self.assertIn(self.entry_sta.id, returned_entry_ids, "Student must see leased course")
         self.assertIn(self.entry_gst.id, returned_entry_ids, "Student must see GST course")
         self.assertNotIn(self.entry_chm.id, returned_entry_ids, "Student must not see ungranted course")
+
+    def test_undoing_grant_removes_schedules_from_department_and_students(self):
+        """
+        When the recipient admin (Sociology) undoes the grant for STA101:
+        1. The grant is deleted via POST /api/courses/grants/{id}/cancel/.
+        2. Department admin timetable (GET /api/scheduling/entries/) NO LONGER includes STA101.
+        3. Program level timetable (GET /api/scheduling/entries/?program=...) NO LONGER includes STA101.
+        4. Student schedule (GET /api/scheduling/sessions/) NO LONGER includes STA101.
+        """
+        grant = CourseAccessGrant.objects.get(
+            course=self.course_sta,
+            granted_to_department=self.dept_soc,
+            status=CourseAccessGrant.Status.APPROVED,
+        )
+
+        # Sociology Admin undoes the grant
+        self.client.force_authenticate(user=self.soc_admin_user)
+        cancel_res = self.client.post(f"/api/courses/grants/{grant.id}/cancel/")
+        self.assertEqual(cancel_res.status_code, status.HTTP_200_OK)
+        self.assertFalse(CourseAccessGrant.objects.filter(id=grant.id).exists())
+
+        # 1. Check Department Admin timetable view -> STA101 is gone
+        dept_res = self.client.get("/api/scheduling/entries/", {
+            "department": self.dept_soc.id,
+            "semester": self.semester.id,
+        })
+        self.assertEqual(dept_res.status_code, status.HTTP_200_OK)
+        dept_courses = {e["course"] for e in dept_res.data if e.get("course")}
+        self.assertNotIn(self.course_sta.id, dept_courses, "STA101 must be unavailable on department timetable after undo")
+
+        # 2. Check Program level timetable view -> STA101 is gone
+        prog_res = self.client.get("/api/scheduling/entries/", {
+            "program": self.prog_crim.id,
+            "semester": self.semester.id,
+        })
+        self.assertEqual(prog_res.status_code, status.HTTP_200_OK)
+        prog_courses = {e["course"] for e in prog_res.data if e.get("course")}
+        self.assertNotIn(self.course_sta.id, prog_courses, "STA101 must be unavailable on program timetable after undo")
+
+        # 3. Check Student schedules view -> STA101 sessions are gone
+        self.client.force_authenticate(user=self.student_user)
+        student_res = self.client.get("/api/scheduling/sessions/", {
+            "semester": self.semester.id,
+        })
+        self.assertEqual(student_res.status_code, status.HTTP_200_OK)
+        student_entry_ids = {
+            s["timetable_entry"]["id"] if isinstance(s["timetable_entry"], dict) else s["timetable_entry"]
+            for s in student_res.data if s.get("timetable_entry")
+        }
+        self.assertNotIn(self.entry_sta.id, student_entry_ids, "STA101 must be unavailable on student schedule after undo")
+        self.assertIn(self.entry_soc.id, student_entry_ids, "Student still sees regular owned course")
