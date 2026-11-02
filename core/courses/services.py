@@ -2,17 +2,18 @@ from django.db.models import Q, Sum
 from .models import Course, CourseAccessGrant
 
 
-def get_visible_courses_for_student(student):
+def get_visible_courses_for_student(student, semester=None):
     """
     Returns a queryset of Course objects visible to a student.
     Visibility rules:
-    1. Active semester: only courses for currently active semesters are visible to students.
+    1. Active semester (or requested semester): courses matching the semester.
     2. Default ownership:
        - 'department': student's home department matches course.owning_department.
          If course.program_scope == 'program', must match student.program.
        - 'faculty': student's faculty matches course.owning_faculty
        - 'school': student's school matches course.owning_school
        - 'general': visible to everyone
+       - Any course starting with 'GST' (General Studies: university-wide mandatory)
     3. Approved access grants:
        - 'approved' CourseAccessGrant granted to student's department, faculty, or school.
          If grant.grant_scope == 'program', must match student.program.
@@ -37,6 +38,7 @@ def get_visible_courses_for_student(student):
     # 2. Default ownership matches
     default_q = (
         Q(owning_level=Course.OwningLevel.GENERAL)
+        | Q(code__startswith="GST")
         | (Q(owning_level=Course.OwningLevel.DEPARTMENT, owning_department=dept) & program_filter)
         | Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty=fac)
         | Q(owning_level=Course.OwningLevel.SCHOOL, owning_school=sch)
@@ -63,8 +65,11 @@ def get_visible_courses_for_student(student):
     if level is not None:
         qs = qs.filter(level=level)
 
-    # Only show active semester courses (or courses without semester assigned)
-    qs = qs.filter(Q(semester__is_active=True) | Q(semester__isnull=True))
+    # Only show active semester courses (or courses without semester assigned), or specified semester
+    if semester:
+        qs = qs.filter(Q(semester_id=semester) | Q(semester__isnull=True))
+    else:
+        qs = qs.filter(Q(semester__is_active=True) | Q(semester__isnull=True))
 
     return qs.distinct()
 
@@ -124,6 +129,9 @@ def get_course_attributed_programs(course, hierarchy_ctx=None):
                 attributed_programs.update(depts_programs.get(d_id, []))
         elif course.owning_level == Course.OwningLevel.GENERAL:
             attributed_programs.update(all_program_ids)
+
+    if course.code and course.code.strip().upper().startswith("GST"):
+        attributed_programs.update(all_program_ids)
 
     # 2. Approved access grants
     if hasattr(course, "_prefetched_objects_cache") and "access_grants" in course._prefetched_objects_cache:

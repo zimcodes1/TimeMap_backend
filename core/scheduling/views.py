@@ -58,7 +58,14 @@ from .serializers import (
     TimetableGenerationRunDetailSerializer,
     TimetableGenerationRunSerializer,
 )
-from .services import get_effective_exam_period, materialize_timetable_entry
+from .services import (
+    build_department_timetable_q,
+    build_faculty_timetable_q,
+    build_program_timetable_q,
+    build_timetable_scope_q,
+    get_effective_exam_period,
+    materialize_timetable_entry,
+)
 
 
 class AcademicSessionViewSet(viewsets.ModelViewSet):
@@ -310,77 +317,33 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        semester_param = self.request.query_params.get("semester")
+
         if user.role == "student" and hasattr(user, "student_profile"):
             from courses.services import get_visible_courses_for_student
-            visible_courses = get_visible_courses_for_student(user.student_profile)
-            return TimetableEntry.objects.filter(
+            visible_courses = get_visible_courses_for_student(user.student_profile, semester=semester_param)
+            qs = TimetableEntry.objects.filter(
                 Q(course__in=visible_courses) | Q(entry_type="event")
             ).distinct()
-
-        if user.role == "lecturer" and hasattr(user, "lecturer_profile"):
-            return TimetableEntry.objects.filter(
+        elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
+            qs = TimetableEntry.objects.filter(
                 Q(course__lecturers=user.lecturer_profile) | Q(entry_type="event")
             ).distinct()
+        else:
+            base_scope_q = build_timetable_scope_q(user, prefix="")
+            qs = TimetableEntry.objects.filter(base_scope_q).distinct()
 
-        dept_qs = get_user_scope_departments(user)
-        fac_qs = get_user_scope_faculties(user)
-        sch_qs = get_user_scope_schools(user)
-
-        qs = TimetableEntry.objects.filter(
-            Q(course__owning_department__in=dept_qs)
-            | Q(course__owning_faculty__in=fac_qs)
-            | Q(course__owning_school__in=sch_qs)
-            | Q(venue__owning_department__in=dept_qs)
-            | Q(venue__owning_faculty__in=fac_qs)
-            | Q(venue__owning_school__in=sch_qs)
-            | Q(entry_type="event")
-        ).distinct()
-
-        semester_param = self.request.query_params.get("semester")
         if semester_param:
             qs = qs.filter(semester_id=semester_param)
         department_param = self.request.query_params.get("department")
         if department_param:
-            qs = qs.filter(
-                Q(course__owning_department_id=department_param)
-                | Q(course__target_program__department_id=department_param)
-                | Q(entry_type="event")
-            )
+            qs = qs.filter(build_department_timetable_q(department_param, prefix=""))
         faculty_param = self.request.query_params.get("faculty")
         if faculty_param:
-            qs = qs.filter(
-                Q(course__owning_faculty_id=faculty_param)
-                | Q(course__owning_department__faculty_id=faculty_param)
-                | Q(entry_type="event")
-            )
+            qs = qs.filter(build_faculty_timetable_q(faculty_param, prefix=""))
         program_param = self.request.query_params.get("program")
         if program_param and str(program_param).upper() != "ALL":
-            from hierarchy.models import Program
-            prog = Program.objects.filter(id=program_param).first()
-            if prog:
-                qs = qs.filter(
-                    Q(entry_type="event")
-                    | Q(course__target_program_id=program_param)
-                    | Q(course__access_grants__target_program_id=program_param, course__access_grants__status="approved")
-                    | (
-                        Q(course__owning_department_id=prog.department_id)
-                        & (Q(course__target_program_id__isnull=True) | Q(course__target_program_id=program_param))
-                    )
-                    | (
-                        Q(course__owning_level__in=["faculty", "school", "general"])
-                        & (
-                            Q(course__owning_faculty_id=prog.department.faculty_id)
-                            | Q(course__owning_school_id=prog.department.faculty.school_id)
-                            | Q(course__owning_level="general")
-                        )
-                    )
-                )
-            else:
-                qs = qs.filter(
-                    Q(entry_type="event")
-                    | Q(course__target_program_id=program_param)
-                    | Q(course__owning_level__in=["faculty", "school", "general"])
-                )
+            qs = qs.filter(build_program_timetable_q(program_param, prefix=""))
         level_param = self.request.query_params.get("level")
         if level_param:
             qs = qs.filter(Q(course__level=level_param) | Q(entry_type="event"))
@@ -473,12 +436,12 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = LectureSession.objects.none()
+        semester_param = self.request.query_params.get("semester")
 
         if user.role == "student" and hasattr(user, "student_profile"):
             student = user.student_profile
             from courses.services import get_visible_courses_for_student
-            visible_courses = get_visible_courses_for_student(student)
+            visible_courses = get_visible_courses_for_student(student, semester=semester_param)
             qs = LectureSession.objects.filter(
                 Q(timetable_entry__course__in=visible_courses)
                 | Q(timetable_entry__entry_type="event")
@@ -493,25 +456,14 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
                 | Q(timetable_entry__entry_type="event")
             ).distinct()
         else:
-            dept_qs = get_user_scope_departments(user)
-            fac_qs = get_user_scope_faculties(user)
-            sch_qs = get_user_scope_schools(user)
-            qs = LectureSession.objects.filter(
-                Q(timetable_entry__course__owning_department__in=dept_qs)
-                | Q(timetable_entry__course__owning_faculty__in=fac_qs)
-                | Q(timetable_entry__course__owning_school__in=sch_qs)
-                | Q(venue__owning_department__in=dept_qs)
-                | Q(venue__owning_faculty__in=fac_qs)
-                | Q(venue__owning_school__in=sch_qs)
-                | Q(timetable_entry__entry_type="event")
-            ).distinct()
+            base_scope_q = build_timetable_scope_q(user, prefix="timetable_entry__")
+            qs = LectureSession.objects.filter(base_scope_q).distinct()
 
         # Query parameters filters
         session_date = self.request.query_params.get("session_date") or self.request.query_params.get("date")
         start_date = self.request.query_params.get("start_date")
         end_date = self.request.query_params.get("end_date")
         status_param = self.request.query_params.get("status")
-        semester_param = self.request.query_params.get("semester")
         program_param = self.request.query_params.get("program")
         level_param = self.request.query_params.get("level")
         entry_type_param = self.request.query_params.get("entry_type")
@@ -528,45 +480,12 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(timetable_entry__semester_id=semester_param)
         department_param = self.request.query_params.get("department")
         if department_param:
-            qs = qs.filter(
-                Q(timetable_entry__course__owning_department_id=department_param)
-                | Q(timetable_entry__course__target_program__department_id=department_param)
-                | Q(timetable_entry__entry_type="event")
-            )
+            qs = qs.filter(build_department_timetable_q(department_param, prefix="timetable_entry__"))
         faculty_param = self.request.query_params.get("faculty")
         if faculty_param:
-            qs = qs.filter(
-                Q(timetable_entry__course__owning_faculty_id=faculty_param)
-                | Q(timetable_entry__course__owning_department__faculty_id=faculty_param)
-                | Q(timetable_entry__entry_type="event")
-            )
+            qs = qs.filter(build_faculty_timetable_q(faculty_param, prefix="timetable_entry__"))
         if program_param and str(program_param).upper() != "ALL":
-            from hierarchy.models import Program
-            prog = Program.objects.filter(id=program_param).first()
-            if prog:
-                qs = qs.filter(
-                    Q(timetable_entry__entry_type="event")
-                    | Q(timetable_entry__course__target_program_id=program_param)
-                    | Q(timetable_entry__course__access_grants__target_program_id=program_param, timetable_entry__course__access_grants__status="approved")
-                    | (
-                        Q(timetable_entry__course__owning_department_id=prog.department_id)
-                        & (Q(timetable_entry__course__target_program_id__isnull=True) | Q(timetable_entry__course__target_program_id=program_param))
-                    )
-                    | (
-                        Q(timetable_entry__course__owning_level__in=["faculty", "school", "general"])
-                        & (
-                            Q(timetable_entry__course__owning_faculty_id=prog.department.faculty_id)
-                            | Q(timetable_entry__course__owning_school_id=prog.department.faculty.school_id)
-                            | Q(timetable_entry__course__owning_level="general")
-                        )
-                    )
-                )
-            else:
-                qs = qs.filter(
-                    Q(timetable_entry__entry_type="event")
-                    | Q(timetable_entry__course__target_program_id=program_param)
-                    | Q(timetable_entry__course__owning_level__in=["faculty", "school", "general"])
-                )
+            qs = qs.filter(build_program_timetable_q(program_param, prefix="timetable_entry__"))
         if level_param:
             qs = qs.filter(Q(timetable_entry__course__level=level_param) | Q(timetable_entry__entry_type="event"))
         if entry_type_param:
@@ -891,11 +810,8 @@ class ExamSittingViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        dept_qs = get_user_scope_departments(user)
-        return ExamSitting.objects.filter(
-            Q(timetable_entry__course__owning_department__in=dept_qs)
-            | Q(timetable_entry__venue__owning_department__in=dept_qs)
-        ).distinct()
+        base_scope_q = build_timetable_scope_q(user, prefix="timetable_entry__")
+        return ExamSitting.objects.filter(base_scope_q).distinct()
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
@@ -918,15 +834,15 @@ class ExamSittingViewSet(viewsets.ModelViewSet):
             return Response([])
 
         student = user.student_profile
+        semester_param = request.query_params.get("semester") or request.query_params.get("semester_id")
         from courses.services import get_visible_courses_for_student
-        visible_courses = get_visible_courses_for_student(student)
+        visible_courses = get_visible_courses_for_student(student, semester=semester_param)
         course_map = {c.id: c for c in visible_courses}
         course_ids = set(course_map.keys())
 
         if not course_ids:
             return Response([])
 
-        semester_param = request.query_params.get("semester") or request.query_params.get("semester_id")
         start_date_param = request.query_params.get("start_date") or request.query_params.get("startDate")
         end_date_param = request.query_params.get("end_date") or request.query_params.get("endDate")
         date_param = request.query_params.get("date")

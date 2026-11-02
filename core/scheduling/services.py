@@ -1,5 +1,12 @@
 import datetime
 from django.db import transaction
+from django.db.models import Q
+from hierarchy.models import Department, Faculty, Program, School
+from accounts.permissions import (
+    get_user_scope_departments,
+    get_user_scope_faculties,
+    get_user_scope_schools,
+)
 from .models import LectureSession
 
 
@@ -114,3 +121,210 @@ def get_effective_exam_period(semester, faculty=None, department=None):
         return semester.exam_start_date, semester.exam_end_date, "school", None
 
     return None, None, "none", None
+
+
+def build_timetable_scope_q(user, prefix=""):
+    """
+    Constructs a Q filter restricting TimetableEntry or LectureSession querysets
+    to the courses, venues, access grants, and events visible to the given user.
+
+    Supports prefix="" for TimetableEntry and prefix="timetable_entry__" for LectureSession.
+    """
+    p = prefix
+    if not user.is_authenticated:
+        return Q(pk__in=[])
+
+    if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+        return Q()
+
+    profile = getattr(user, "admin_profile", None)
+    if profile:
+        if profile.level in ["system", "university"]:
+            return Q()
+
+        if profile.level == "school" and profile.scope_school_id:
+            sch_id = profile.scope_school_id
+            venue_q = (
+                Q(venue__owning_school_id=sch_id)
+                | Q(venue__owning_faculty__school_id=sch_id)
+                | Q(venue__owning_department__faculty__school_id=sch_id)
+            )
+            if p:
+                venue_q |= (
+                    Q(**{f"{p}venue__owning_school_id": sch_id})
+                    | Q(**{f"{p}venue__owning_faculty__school_id": sch_id})
+                    | Q(**{f"{p}venue__owning_department__faculty__school_id": sch_id})
+                )
+            return (
+                Q(**{f"{p}course__owning_school_id": sch_id})
+                | Q(**{f"{p}course__owning_faculty__school_id": sch_id})
+                | Q(**{f"{p}course__owning_department__faculty__school_id": sch_id})
+                | venue_q
+                | Q(**{f"{p}course__access_grants__granted_to_school_id": sch_id, f"{p}course__access_grants__status": "approved"})
+                | Q(**{f"{p}course__owning_level": "general"})
+                | Q(**{f"{p}course__code__startswith": "GST"})
+                | Q(**{f"{p}entry_type": "event"})
+            )
+
+        if profile.level == "faculty" and profile.scope_faculty_id:
+            fac_id = profile.scope_faculty_id
+            return build_faculty_timetable_q(fac_id, prefix=prefix)
+
+        if profile.level == "department" and profile.scope_department_id:
+            dept_id = profile.scope_department_id
+            return build_department_timetable_q(dept_id, prefix=prefix)
+
+    dept_qs = get_user_scope_departments(user)
+    fac_qs = get_user_scope_faculties(user)
+    sch_qs = get_user_scope_schools(user)
+    base_q = (
+        Q(**{f"{p}course__owning_department__in": dept_qs})
+        | Q(**{f"{p}course__owning_faculty__in": fac_qs})
+        | Q(**{f"{p}course__owning_school__in": sch_qs})
+        | Q(venue__owning_department__in=dept_qs)
+        | Q(venue__owning_faculty__in=fac_qs)
+        | Q(venue__owning_school__in=sch_qs)
+        | Q(**{f"{p}course__access_grants__granted_to_department__in": dept_qs, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__access_grants__target_program__department__in": dept_qs, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__access_grants__granted_to_faculty__in": fac_qs, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__access_grants__granted_to_school__in": sch_qs, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__owning_level": "general"})
+        | Q(**{f"{p}course__code__startswith": "GST"})
+        | Q(**{f"{p}entry_type": "event"})
+    )
+    if p:
+        base_q |= (
+            Q(**{f"{p}venue__owning_department__in": dept_qs})
+            | Q(**{f"{p}venue__owning_faculty__in": fac_qs})
+            | Q(**{f"{p}venue__owning_school__in": sch_qs})
+        )
+    return base_q
+
+
+def build_department_timetable_q(department_id, prefix=""):
+    """
+    Constructs a Q filter for a department timetable view.
+    Includes:
+    - Events
+    - Courses owned directly by this department
+    - Courses targeting a program under this department
+    - Leased courses with approved access grants to this department (or any of its programs)
+    - Leased courses granted to its parent faculty or school
+    - Faculty-foundation courses owned by its parent faculty
+    - School-level foundation courses
+    - University-wide general courses and GST courses
+    """
+    p = prefix
+    dept = Department.objects.filter(id=department_id).select_related("faculty").first()
+    fac_id = dept.faculty_id if dept else None
+    sch_id = dept.faculty.school_id if (dept and dept.faculty) else None
+
+    q = (
+        Q(**{f"{p}entry_type": "event"})
+        | Q(**{f"{p}course__owning_department_id": department_id})
+        | Q(**{f"{p}course__target_program__department_id": department_id})
+        | Q(**{f"{p}course__access_grants__granted_to_department_id": department_id, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__access_grants__target_program__department_id": department_id, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__owning_level": "general"})
+        | Q(**{f"{p}course__code__startswith": "GST"})
+    )
+    if fac_id:
+        q |= (
+            Q(**{f"{p}course__access_grants__granted_to_faculty_id": fac_id, f"{p}course__access_grants__status": "approved"})
+            | (Q(**{f"{p}course__owning_level": "faculty"}) & Q(**{f"{p}course__owning_faculty_id": fac_id}))
+        )
+    if sch_id:
+        q |= (
+            Q(**{f"{p}course__access_grants__granted_to_school_id": sch_id, f"{p}course__access_grants__status": "approved"})
+            | (Q(**{f"{p}course__owning_level": "school"}) & Q(**{f"{p}course__owning_school_id": sch_id}))
+        )
+    return q
+
+
+def build_faculty_timetable_q(faculty_id, prefix=""):
+    """
+    Constructs a Q filter for a faculty timetable view.
+    Includes:
+    - Events
+    - Courses owned directly by this faculty
+    - Courses owned by any department within this faculty
+    - Leased courses granted to this faculty or any department within it
+    - School-level foundation courses
+    - University-wide general courses and GST courses
+    """
+    p = prefix
+    fac = Faculty.objects.filter(id=faculty_id).first()
+    sch_id = fac.school_id if fac else None
+
+    q = (
+        Q(**{f"{p}entry_type": "event"})
+        | Q(**{f"{p}course__owning_faculty_id": faculty_id})
+        | Q(**{f"{p}course__owning_department__faculty_id": faculty_id})
+        | Q(**{f"{p}course__access_grants__granted_to_faculty_id": faculty_id, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__access_grants__granted_to_department__faculty_id": faculty_id, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__access_grants__target_program__department__faculty_id": faculty_id, f"{p}course__access_grants__status": "approved"})
+        | Q(**{f"{p}course__owning_level": "general"})
+        | Q(**{f"{p}course__code__startswith": "GST"})
+    )
+    if sch_id:
+        q |= (
+            Q(**{f"{p}course__access_grants__granted_to_school_id": sch_id, f"{p}course__access_grants__status": "approved"})
+            | (Q(**{f"{p}course__owning_level": "school"}) & Q(**{f"{p}course__owning_school_id": sch_id}))
+        )
+    return q
+
+
+def build_program_timetable_q(program_id, prefix=""):
+    """
+    Constructs a Q filter for a program timetable view.
+    Includes:
+    - Events
+    - Courses targeting this specific program
+    - Leased courses granted specifically to this program
+    - Courses owned by this program's department (department-general or targeting this program)
+    - Leased courses granted to this program's department (department-general or targeting this program)
+    - Leased courses granted to its faculty or school
+    - Faculty-foundation courses owned by its faculty
+    - School-level foundation courses
+    - University-wide general courses and GST courses
+    """
+    p = prefix
+    prog = Program.objects.filter(id=program_id).select_related("department__faculty").first()
+    if not prog:
+        return (
+            Q(**{f"{p}entry_type": "event"})
+            | Q(**{f"{p}course__target_program_id": program_id})
+            | Q(**{f"{p}course__owning_level__in": ["faculty", "school", "general"]})
+            | Q(**{f"{p}course__code__startswith": "GST"})
+        )
+
+    dept_id = prog.department_id
+    fac_id = prog.department.faculty_id if prog.department else None
+    sch_id = prog.department.faculty.school_id if (prog.department and prog.department.faculty) else None
+
+    q = (
+        Q(**{f"{p}entry_type": "event"})
+        | Q(**{f"{p}course__target_program_id": program_id})
+        | Q(**{f"{p}course__access_grants__target_program_id": program_id, f"{p}course__access_grants__status": "approved"})
+        | (
+            Q(**{f"{p}course__owning_department_id": dept_id})
+            & (Q(**{f"{p}course__target_program_id__isnull": True}) | Q(**{f"{p}course__target_program_id": program_id}))
+        )
+        | (
+            Q(**{f"{p}course__access_grants__granted_to_department_id": dept_id, f"{p}course__access_grants__status": "approved"})
+            & (Q(**{f"{p}course__access_grants__target_program_id__isnull": True}) | Q(**{f"{p}course__access_grants__target_program_id": program_id}))
+        )
+        | Q(**{f"{p}course__owning_level": "general"})
+        | Q(**{f"{p}course__code__startswith": "GST"})
+    )
+    if fac_id:
+        q |= (
+            Q(**{f"{p}course__access_grants__granted_to_faculty_id": fac_id, f"{p}course__access_grants__status": "approved"})
+            | (Q(**{f"{p}course__owning_level": "faculty"}) & Q(**{f"{p}course__owning_faculty_id": fac_id}))
+        )
+    if sch_id:
+        q |= (
+            Q(**{f"{p}course__access_grants__granted_to_school_id": sch_id, f"{p}course__access_grants__status": "approved"})
+            | (Q(**{f"{p}course__owning_level": "school"}) & Q(**{f"{p}course__owning_school_id": sch_id}))
+        )
+    return q
