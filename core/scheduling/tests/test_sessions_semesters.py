@@ -117,3 +117,127 @@ class AcademicSessionAndSemesterTests(APITestCase):
         self.assertFalse(sem1.is_active)
         self.assertTrue(sem2.is_active)
 
+    def test_semester_mutual_exclusivity_on_creation(self):
+        self.client.force_authenticate(user=self.school_user)
+
+        session = AcademicSession.objects.create(
+            school=self.school,
+            label="2026/2027",
+            start_date=date(2026, 9, 1),
+            end_date=date(2027, 7, 31),
+            is_current=True,
+        )
+
+        # Sem 1 created as active
+        s1 = Semester.objects.create(
+            session=session,
+            name="first",
+            start_date=date(2026, 9, 15),
+            end_date=date(2027, 2, 15),
+            lecture_start_date=date(2026, 9, 20),
+            lecture_end_date=date(2027, 1, 20),
+            is_active=True,
+        )
+        self.assertTrue(s1.is_active)
+
+        # Sem 2 created as active via API -> s1 must automatically become inactive
+        sem2_res = self.client.post(
+            "/api/scheduling/semesters/",
+            {
+                "session": session.id,
+                "name": "second",
+                "start_date": "2027-03-01",
+                "end_date": "2027-07-15",
+                "lecture_start_date": "2027-03-05",
+                "lecture_end_date": "2027-06-30",
+                "is_active": True,
+            },
+            format="json",
+        )
+        self.assertEqual(sem2_res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(sem2_res.data["is_active"])
+
+        s1.refresh_from_db()
+        self.assertFalse(s1.is_active)
+
+    def test_past_semester_cannot_be_activated(self):
+        self.client.force_authenticate(user=self.school_user)
+
+        past_session = AcademicSession.objects.create(
+            school=self.school,
+            label="2020/2021",
+            start_date=date(2020, 9, 1),
+            end_date=date(2021, 7, 31),
+            is_current=False,
+        )
+
+        past_sem = Semester.objects.create(
+            session=past_session,
+            name="first",
+            start_date=date(2020, 9, 15),
+            end_date=date(2021, 2, 15),
+            lecture_start_date=date(2020, 9, 20),
+            lecture_end_date=date(2021, 1, 20),
+            is_active=False,
+        )
+
+        self.assertTrue(past_sem.is_past)
+        self.assertFalse(past_sem.can_activate)
+
+        # Attempt to activate via API should fail with 400
+        res = self.client.post(f"/api/scheduling/semesters/{past_sem.id}/activate/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already passed", res.data.get("error", ""))
+
+        # Attempt to set past session as current should fail with 400
+        res_sess = self.client.post(f"/api/scheduling/academic-sessions/{past_session.id}/set-current/")
+        self.assertEqual(res_sess.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_auto_activation_based_on_current_date(self):
+        from django.utils import timezone
+        from scheduling.services import sync_school_semesters
+
+        today = timezone.localdate()
+
+        session = AcademicSession.objects.create(
+            school=self.school,
+            label="2026/2027",
+            start_date=today - timezone.timedelta(days=60),
+            end_date=today + timezone.timedelta(days=200),
+            is_current=True,
+        )
+
+        # Sem 1 covers today
+        sem1 = Semester.objects.create(
+            session=session,
+            name="first",
+            start_date=today - timezone.timedelta(days=30),
+            end_date=today + timezone.timedelta(days=30),
+            lecture_start_date=today - timezone.timedelta(days=25),
+            lecture_end_date=today + timezone.timedelta(days=25),
+            is_active=False,  # Initially inactive
+        )
+
+        # Sem 2 in the future
+        sem2 = Semester.objects.create(
+            session=session,
+            name="second",
+            start_date=today + timezone.timedelta(days=40),
+            end_date=today + timezone.timedelta(days=120),
+            lecture_start_date=today + timezone.timedelta(days=45),
+            lecture_end_date=today + timezone.timedelta(days=110),
+            is_active=True,  # Mistakenly set active
+        )
+
+        # Run sync
+        sync_school_semesters(school=self.school)
+
+        sem1.refresh_from_db()
+        sem2.refresh_from_db()
+
+        # Sem 1 should be auto-activated because today falls within its timeframe
+        self.assertTrue(sem1.is_active)
+        # Sem 2 should be deactivated
+        self.assertFalse(sem2.is_active)
+
+

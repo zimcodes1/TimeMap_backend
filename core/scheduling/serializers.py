@@ -24,6 +24,8 @@ class SemesterSerializer(serializers.ModelSerializer):
     school_id = serializers.ReadOnlyField(source="session.school.id")
     school_name = serializers.ReadOnlyField(source="session.school.name")
     created_by_name = serializers.ReadOnlyField(source="created_by.full_name")
+    is_past = serializers.BooleanField(read_only=True)
+    can_activate = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Semester
@@ -43,11 +45,13 @@ class SemesterSerializer(serializers.ModelSerializer):
             "exam_start_date",
             "exam_end_date",
             "is_active",
+            "is_past",
+            "can_activate",
             "created_by",
             "created_by_name",
             "created_at",
         )
-        read_only_fields = ("id", "created_by", "created_by_name", "created_at")
+        read_only_fields = ("id", "is_past", "can_activate", "created_by", "created_by_name", "created_at")
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -120,12 +124,24 @@ class SemesterSerializer(serializers.ModelSerializer):
                     "exam_end_date": "Exam end date cannot be after semester end date."
                 })
 
+        is_active = attrs.get("is_active", self.instance.is_active if self.instance else False)
+        today = timezone.localdate()
+        if is_active and end_date and end_date < today:
+            raise serializers.ValidationError({
+                "is_active": "A past semester cannot be set as active."
+            })
+        if is_active and session and session.is_past:
+            raise serializers.ValidationError({
+                "is_active": "A semester in a past academic session cannot be set as active."
+            })
+
         return attrs
 
 
 class AcademicSessionSerializer(serializers.ModelSerializer):
     school_name = serializers.ReadOnlyField(source="school.name")
     school_code = serializers.ReadOnlyField(source="school.code")
+    is_past = serializers.BooleanField(read_only=True)
     semesters = SemesterSerializer(many=True, read_only=True)
 
     class Meta:
@@ -140,10 +156,11 @@ class AcademicSessionSerializer(serializers.ModelSerializer):
             "end_date",
             "max_semesters",
             "is_current",
+            "is_past",
             "semesters",
             "created_at",
         )
-        read_only_fields = ("id", "created_at")
+        read_only_fields = ("id", "is_past", "created_at")
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -154,6 +171,14 @@ class AcademicSessionSerializer(serializers.ModelSerializer):
                 if hasattr(user, "admin_profile") and user.admin_profile.level == "school":
                     if school and user.admin_profile.scope_school_id and school.id != user.admin_profile.scope_school_id:
                         raise serializers.ValidationError({"school": "School admins can only create sessions for their assigned school."})
+
+        is_current = attrs.get("is_current", self.instance.is_current if self.instance else False)
+        end_date = attrs.get("end_date", self.instance.end_date if self.instance else None)
+        today = timezone.localdate()
+        if is_current and end_date and end_date < today:
+            raise serializers.ValidationError({
+                "is_current": "A past academic session cannot be marked as current."
+            })
 
         max_semesters = attrs.get("max_semesters")
         if max_semesters is not None:

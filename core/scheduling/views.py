@@ -15,6 +15,7 @@ from django.db.models import Q
 from django.http import HttpResponse, StreamingHttpResponse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
+from hierarchy.models import School
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -65,6 +66,7 @@ from .services import (
     build_timetable_scope_q,
     get_effective_exam_period,
     materialize_timetable_entry,
+    sync_school_semesters,
 )
 
 
@@ -74,13 +76,16 @@ class AcademicSessionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        school_id = self.request.query_params.get("school")
+        # Keep semester and session lifecycles synchronized with current date
+        sync_school_semesters(school=School.objects.filter(id=school_id).first() if school_id else None)
+
         qs = AcademicSession.objects.select_related("school").prefetch_related("semesters")
         if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             pass
         else:
             qs = qs.filter(school__in=get_user_scope_schools(user))
 
-        school_id = self.request.query_params.get("school")
         if school_id:
             qs = qs.filter(school_id=school_id)
         is_current = self.request.query_params.get("is_current")
@@ -107,6 +112,11 @@ class AcademicSessionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="set-current")
     def set_current(self, request, pk=None):
         session = self.get_object()
+        if session.is_past:
+            return Response(
+                {"error": "Cannot set a past academic session as current."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         AcademicSession.objects.filter(school=session.school).exclude(id=session.id).update(is_current=False)
         session.is_current = True
         session.save(update_fields=["is_current"])
@@ -119,6 +129,10 @@ class SemesterViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        school_id = self.request.query_params.get("school")
+        # Keep semester and session lifecycles synchronized with current date
+        sync_school_semesters(school=School.objects.filter(id=school_id).first() if school_id else None)
+
         qs = Semester.objects.select_related("session__school", "created_by")
         if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             pass
@@ -128,7 +142,6 @@ class SemesterViewSet(viewsets.ModelViewSet):
         session_id = self.request.query_params.get("session")
         if session_id:
             qs = qs.filter(session_id=session_id)
-        school_id = self.request.query_params.get("school")
         if school_id:
             qs = qs.filter(session__school_id=school_id)
         is_active = self.request.query_params.get("is_active")
@@ -149,6 +162,11 @@ class SemesterViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="activate")
     def activate(self, request, pk=None):
         semester = self.get_object()
+        if semester.is_past or not semester.can_activate:
+            return Response(
+                {"error": "Cannot activate a semester whose session or end date has already passed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         school = semester.session.school
         # Deactivate any other semesters for this school
         Semester.objects.filter(session__school=school).exclude(id=semester.id).update(is_active=False)
@@ -1643,7 +1661,7 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
         if scope_id:
             qs = qs.filter(scope_id=scope_id)
         if user.id:
-            qs = qs.filter(initiated_by_id=user.id)
+            qs = qs.filter(Q(initiated_by_id=user.id) | Q(is_published=True))
 
         return Response(TimetableGenerationRunSerializer(qs[:50], many=True).data)
 

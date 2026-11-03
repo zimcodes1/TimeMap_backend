@@ -41,9 +41,28 @@ class AcademicSession(models.Model):
             raise ValidationError("Session start date must be before end date.")
         if self.max_semesters is not None and (self.max_semesters < 1 or self.max_semesters > 6):
             raise ValidationError("Max semesters per session must be between 1 and 6.")
+        if self.is_current and self.is_past:
+            raise ValidationError("A past academic session cannot be marked as current.")
+
+    @property
+    def is_past(self):
+        from django.utils import timezone
+        today = timezone.localdate()
+        if self.end_date and self.end_date < today:
+            return True
+        if self.pk:
+            sem_ends = list(self.semesters.values_list("end_date", flat=True))
+            if sem_ends:
+                max_sem_end = max(sem_ends)
+                max_allowed = self.max_semesters or 2
+                if max_sem_end < today and (len(sem_ends) >= max_allowed or self.end_date < today):
+                    return True
+        return False
 
     def save(self, *args, **kwargs):
         self.full_clean()
+        if self.is_current and self.school_id:
+            AcademicSession.objects.filter(school_id=self.school_id, is_current=True).exclude(pk=self.pk).update(is_current=False)
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -93,10 +112,26 @@ class Semester(models.Model):
         unique_together = ("session", "name")
         ordering = ["session", "name"]
 
+    @property
+    def is_past(self):
+        from django.utils import timezone
+        today = timezone.localdate()
+        if self.end_date and self.end_date < today:
+            return True
+        if self.session_id and self.session.is_past:
+            return True
+        return False
+
+    @property
+    def can_activate(self):
+        return not self.is_past
+
     def clean(self):
         super().clean()
         if self.start_date and self.end_date and self.start_date >= self.end_date:
             raise ValidationError("Semester start date must be before end date.")
+        if self.is_active and self.is_past:
+            raise ValidationError("A past semester cannot be set as active.")
         if self.session_id:
             max_allowed = getattr(self.session, "max_semesters", 2) or 2
             ordinal_map = {"first": 1, "second": 2, "third": 3, "fourth": 4}
@@ -124,6 +159,12 @@ class Semester(models.Model):
 
     def save(self, *args, **kwargs):
         self.full_clean()
+        if self.is_active and self.session_id:
+            # Enforce mutual exclusivity across the entire school:
+            Semester.objects.filter(
+                session__school_id=self.session.school_id,
+                is_active=True,
+            ).exclude(pk=self.pk).update(is_active=False)
         super().save(*args, **kwargs)
 
     def __str__(self):

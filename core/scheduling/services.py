@@ -323,3 +323,104 @@ def build_program_timetable_q(program_id, prefix=""):
             | (Q(**{f"{p}course__owning_level": "school"}) & Q(**{f"{p}course__owning_school_id": sch_id}))
         )
     return q
+
+
+def sync_school_semesters(school=None):
+    """
+    Synchronizes semester lifecycle and activation states across schools:
+    1. Semesters whose end date has passed, or whose session has passed
+       (i.e., max(semester.end_date for semester in session) < today, or session.end_date < today)
+       must be inactive (is_active=False).
+    2. Mutual exclusivity: At most ONE semester may be active at any time for the same school.
+    3. Auto-activation: The next configured semester in a session is automatically
+       activated once the current date (today) is within its configured timeframe
+       (start_date <= today <= end_date).
+    """
+    from django.utils import timezone
+    from hierarchy.models import School
+    from .models import AcademicSession, Semester
+
+    today = timezone.localdate()
+    schools = [school] if school else list(School.objects.all())
+
+    for sch in schools:
+        # Deactivate any past sessions that are still marked is_current
+        AcademicSession.objects.filter(school=sch, end_date__lt=today, is_current=True).update(is_current=False)
+
+        semesters = list(
+            Semester.objects.filter(session__school=sch)
+            .select_related("session")
+            .order_by("start_date")
+        )
+        if not semesters:
+            continue
+
+        # Compute max end_date per session
+        session_max_end = {}
+        session_sem_count = {}
+        for sem in semesters:
+            s_id = sem.session_id
+            session_sem_count[s_id] = session_sem_count.get(s_id, 0) + 1
+            if s_id not in session_max_end or sem.end_date > session_max_end[s_id]:
+                session_max_end[s_id] = sem.end_date
+
+        past_ids = set()
+        past_session_ids = set()
+        for sem in semesters:
+            max_allowed = getattr(sem.session, "max_semesters", 2) or 2
+            is_session_past = (
+                (sem.session.end_date and sem.session.end_date < today)
+                or (
+                    session_max_end.get(sem.session_id)
+                    and session_max_end[sem.session_id] < today
+                    and session_sem_count.get(sem.session_id, 0) >= max_allowed
+                )
+            )
+            if is_session_past:
+                past_session_ids.add(sem.session_id)
+            if sem.end_date < today or is_session_past:
+                past_ids.add(sem.id)
+
+        # Deactivate any past sessions that are marked current
+        if past_session_ids:
+            AcademicSession.objects.filter(id__in=past_session_ids, is_current=True).update(is_current=False)
+
+        # Deactivate any past semesters that are marked active
+        if past_ids:
+            Semester.objects.filter(id__in=past_ids, is_active=True).update(is_active=False)
+
+        # Filter out past semesters for active consideration
+        eligible_semesters = [s for s in semesters if s.id not in past_ids]
+
+        # Check for auto-activation: a semester whose timeframe covers today
+        # Prioritize the current academic session (is_current=True)
+        current_sess_eligible = [s for s in eligible_semesters if s.session.is_current]
+        other_sess_eligible = [s for s in eligible_semesters if not s.session.is_current]
+
+        timeframe_match = None
+        for s in current_sess_eligible + other_sess_eligible:
+            if s.start_date <= today <= s.end_date:
+                timeframe_match = s
+                break
+
+        if timeframe_match:
+            # Activate the matching semester and deactivate all others in the school
+            Semester.objects.filter(session__school=sch, is_active=True).exclude(id=timeframe_match.id).update(is_active=False)
+            if not timeframe_match.is_active:
+                timeframe_match.is_active = True
+                timeframe_match.save(update_fields=["is_active"])
+            # Ensure its session is marked current
+            if not timeframe_match.session.is_current:
+                AcademicSession.objects.filter(school=sch, is_current=True).exclude(id=timeframe_match.session_id).update(is_current=False)
+                timeframe_match.session.is_current = True
+                timeframe_match.session.save(update_fields=["is_current"])
+        else:
+            # No semester timeframe covers today.
+            # Ensure at most ONE active semester exists across the entire school
+            active_eligible = [s for s in eligible_semesters if s.is_active]
+            if len(active_eligible) > 1:
+                # Keep the first, deactivate all others
+                keeper = active_eligible[0]
+                Semester.objects.filter(session__school=sch, is_active=True).exclude(id=keeper.id).update(is_active=False)
+
+
