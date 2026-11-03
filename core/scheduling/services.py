@@ -391,9 +391,12 @@ def sync_school_semesters(school=None):
 
         # Filter out past semesters for active consideration
         eligible_semesters = [s for s in semesters if s.id not in past_ids]
+        if not eligible_semesters:
+            continue
 
-        # Check for auto-activation: a semester whose timeframe covers today
-        # Prioritize the current academic session (is_current=True)
+        active_eligible = [s for s in eligible_semesters if s.is_active]
+
+        # Check for auto-activation candidate whose timeframe covers today
         current_sess_eligible = [s for s in eligible_semesters if s.session.is_current]
         other_sess_eligible = [s for s in eligible_semesters if not s.session.is_current]
 
@@ -403,24 +406,32 @@ def sync_school_semesters(school=None):
                 timeframe_match = s
                 break
 
-        if timeframe_match:
-            # Activate the matching semester and deactivate all others in the school
-            Semester.objects.filter(session__school=sch, is_active=True).exclude(id=timeframe_match.id).update(is_active=False)
-            if not timeframe_match.is_active:
+        if not active_eligible:
+            # If no semester is active in the school, auto-activate the matching semester
+            if timeframe_match:
+                Semester.objects.filter(session__school=sch, is_active=True).exclude(id=timeframe_match.id).update(is_active=False)
                 timeframe_match.is_active = True
                 timeframe_match.save(update_fields=["is_active"])
-            # Ensure its session is marked current
-            if not timeframe_match.session.is_current:
-                AcademicSession.objects.filter(school=sch, is_current=True).exclude(id=timeframe_match.session_id).update(is_current=False)
-                timeframe_match.session.is_current = True
-                timeframe_match.session.save(update_fields=["is_current"])
+                if not timeframe_match.session.is_current:
+                    AcademicSession.objects.filter(school=sch, is_current=True).exclude(id=timeframe_match.session_id).update(is_current=False)
+                    timeframe_match.session.is_current = True
+                    timeframe_match.session.save(update_fields=["is_current"])
+        elif len(active_eligible) > 1:
+            # Mutual exclusivity violation: multiple active semesters exist.
+            # Prefer the one matching today's timeframe, otherwise keep the first
+            keeper = timeframe_match if (timeframe_match and timeframe_match in active_eligible) else active_eligible[0]
+            Semester.objects.filter(session__school=sch, is_active=True).exclude(id=keeper.id).update(is_active=False)
+            if not keeper.session.is_current:
+                AcademicSession.objects.filter(school=sch, is_current=True).exclude(id=keeper.session_id).update(is_current=False)
+                keeper.session.is_current = True
+                keeper.session.save(update_fields=["is_current"])
         else:
-            # No semester timeframe covers today.
-            # Ensure at most ONE active semester exists across the entire school
-            active_eligible = [s for s in eligible_semesters if s.is_active]
-            if len(active_eligible) > 1:
-                # Keep the first, deactivate all others
-                keeper = active_eligible[0]
-                Semester.objects.filter(session__school=sch, is_active=True).exclude(id=keeper.id).update(is_active=False)
+            # Exactly one eligible semester is active.
+            # Respect the active semester and ensure its session is marked current.
+            active_sem = active_eligible[0]
+            if not active_sem.session.is_current:
+                AcademicSession.objects.filter(school=sch, is_current=True).exclude(id=active_sem.session_id).update(is_current=False)
+                active_sem.session.is_current = True
+                active_sem.session.save(update_fields=["is_current"])
 
 

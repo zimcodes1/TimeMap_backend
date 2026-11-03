@@ -11,6 +11,7 @@ class CourseSerializer(serializers.ModelSerializer):
     owning_faculty_name = serializers.ReadOnlyField(source="owning_faculty.name")
     owning_school_name = serializers.ReadOnlyField(source="owning_school.name")
     semester_name = serializers.ReadOnlyField(source="semester.get_name_display")
+    semester_code = serializers.ReadOnlyField(source="semester.name")
     session_label = serializers.ReadOnlyField(source="semester.session.label")
     target_program_name = serializers.ReadOnlyField(source="target_program.name")
     target_program_code = serializers.ReadOnlyField(source="target_program.code")
@@ -40,6 +41,7 @@ class CourseSerializer(serializers.ModelSerializer):
             "owning_school_name",
             "semester",
             "semester_name",
+            "semester_code",
             "session_label",
             "program_scope",
             "target_program",

@@ -197,6 +197,7 @@ class AcademicSessionAndSemesterTests(APITestCase):
         from django.utils import timezone
         from scheduling.services import sync_school_semesters
 
+        self.client.force_authenticate(user=self.school_user)
         today = timezone.localdate()
 
         session = AcademicSession.objects.create(
@@ -207,7 +208,7 @@ class AcademicSessionAndSemesterTests(APITestCase):
             is_current=True,
         )
 
-        # Sem 1 covers today
+        # Sem 1 covers today, initially inactive
         sem1 = Semester.objects.create(
             session=session,
             name="first",
@@ -215,10 +216,10 @@ class AcademicSessionAndSemesterTests(APITestCase):
             end_date=today + timezone.timedelta(days=30),
             lecture_start_date=today - timezone.timedelta(days=25),
             lecture_end_date=today + timezone.timedelta(days=25),
-            is_active=False,  # Initially inactive
+            is_active=False,
         )
 
-        # Sem 2 in the future
+        # Sem 2 in the future, initially inactive
         sem2 = Semester.objects.create(
             session=session,
             name="second",
@@ -226,18 +227,32 @@ class AcademicSessionAndSemesterTests(APITestCase):
             end_date=today + timezone.timedelta(days=120),
             lecture_start_date=today + timezone.timedelta(days=45),
             lecture_end_date=today + timezone.timedelta(days=110),
-            is_active=True,  # Mistakenly set active
+            is_active=False,
         )
 
-        # Run sync
+        # 1. When no semester is active, sync auto-activates sem1 because today falls in its timeframe
         sync_school_semesters(school=self.school)
 
         sem1.refresh_from_db()
         sem2.refresh_from_db()
 
-        # Sem 1 should be auto-activated because today falls within its timeframe
         self.assertTrue(sem1.is_active)
-        # Sem 2 should be deactivated
         self.assertFalse(sem2.is_active)
+
+        # 2. When an admin explicitly activates sem2 via API, it must persist and NOT be reverted by sync
+        activate_res = self.client.post(f"/api/scheduling/semesters/{sem2.id}/activate/")
+        self.assertEqual(activate_res.status_code, status.HTTP_200_OK)
+
+        sem1.refresh_from_db()
+        sem2.refresh_from_db()
+        self.assertFalse(sem1.is_active)
+        self.assertTrue(sem2.is_active)
+
+        # Repeated sync calls must respect the admin's manual activation
+        sync_school_semesters(school=self.school)
+        sem1.refresh_from_db()
+        sem2.refresh_from_db()
+        self.assertFalse(sem1.is_active)
+        self.assertTrue(sem2.is_active)
 
 

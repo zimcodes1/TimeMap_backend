@@ -13,6 +13,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from scheduling.models import Semester
 from .models import Course, CourseAccessGrant, CourseRegistration
 from .permissions import CanManageCourse, CanManageCourseGrant
 from .serializers import (
@@ -99,7 +100,30 @@ class CourseViewSet(viewsets.ModelViewSet):
 
         semester_param = self.request.query_params.get("semester")
         if semester_param:
-            base_qs = base_qs.filter(semester_id=semester_param)
+            if str(semester_param).isdigit():
+                sem_obj = Semester.objects.filter(id=int(semester_param)).first()
+                if sem_obj:
+                    # Match both the specific semester ID and any semester with the same code/name
+                    # so courses remain visible in corresponding semester timeframes regardless of session created
+                    base_qs = base_qs.filter(
+                        Q(semester_id=sem_obj.id) | Q(semester__name=sem_obj.name)
+                    )
+                else:
+                    base_qs = base_qs.filter(semester_id=int(semester_param))
+            elif str(semester_param).lower() == "active":
+                from accounts.permissions import get_user_scope_schools
+                schs = get_user_scope_schools(user)
+                active_sem = (
+                    Semester.objects.filter(session__school__in=schs, is_active=True).first()
+                    if schs
+                    else Semester.objects.filter(is_active=True).first()
+                )
+                if active_sem:
+                    base_qs = base_qs.filter(
+                        Q(semester_id=active_sem.id) | Q(semester__name=active_sem.name)
+                    )
+            else:
+                base_qs = base_qs.filter(semester__name__iexact=str(semester_param).strip())
         program_param = self.request.query_params.get("program")
         if program_param:
             base_qs = base_qs.filter(
