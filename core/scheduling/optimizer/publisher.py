@@ -143,6 +143,34 @@ def publish_generation_run(
     generation_run.is_published = True
     generation_run.save(update_fields=["is_published"])
 
+    # Dispatch TIMETABLE_PUBLISHED notification to students and staff
+    try:
+        from notifications.models import Notification
+        from notifications.services import resolve_course_recipients, dispatch_event_notifications_bulk
+        from courses.models import Course
+
+        course_ids = {item.get("course_id") for item in generation_run.assignments_payload if item.get("course_id")}
+        notified_users = set()
+        for c_id in course_ids:
+            course = Course.objects.filter(id=c_id).first()
+            if course:
+                for u in resolve_course_recipients(course, semester=semester):
+                    notified_users.add(u)
+
+        if notified_users:
+            sem_label = semester.get_name_display() if semester else "Semester"
+            dispatch_event_notifications_bulk(
+                recipients=list(notified_users),
+                notification_type=Notification.NotificationType.TIMETABLE_PUBLISHED,
+                title=f"Timetable Published: {sem_label}",
+                body=f"The lecture timetable for {sem_label} has been published. Check your schedule on TimeMap.",
+                related_model="TimetableGenerationRun",
+                related_id=generation_run.id if hasattr(generation_run, 'id') else None,
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to dispatch timetable publish notification: {e}")
+
     return {
         "generation_run_id": str(generation_run.id),
         "status": "published",

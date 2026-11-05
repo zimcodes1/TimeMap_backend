@@ -161,3 +161,15 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = "static/"
+
+# Firebase Admin SDK Configuration
+import os
+FIREBASE_CREDENTIALS_PATH = os.environ.get(
+    "FIREBASE_CREDENTIALS_PATH",
+    str(BASE_DIR / "serviceAccountKey.json"),
+)
+if not os.path.isabs(FIREBASE_CREDENTIALS_PATH):
+    candidate = BASE_DIR / FIREBASE_CREDENTIALS_PATH
+    if candidate.exists():
+        FIREBASE_CREDENTIALS_PATH = str(candidate)
+

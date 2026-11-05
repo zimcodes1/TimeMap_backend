@@ -14,3 +14,4 @@ core/scheduling/management/commands/seed_fnas_timetable_data.py
 .~lock.fnas_allowed_venues_by_course.csv#
 fnas_allowed_venues_by_course.csv
 fnas_allowed_venues_by_course.json
+core/serviceAccountKey.json

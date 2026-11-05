@@ -75,6 +75,31 @@ def create_class_rep_report(student_user, session, held, reason, window_minutes=
     session.status = LectureSession.Status.HELD if held else LectureSession.Status.NOT_HELD
     session.save()
 
+    # Notify assigned lecturers of the report submission
+    try:
+        from notifications.models import Notification
+        from notifications.services import dispatch_event_notification
+
+        course = session.timetable_entry.course if session.timetable_entry else None
+        if course:
+            status_text = "HELD" if held else "NOT HELD"
+            title = f"Class Rep Report: {course.code} ({status_text})"
+            body = f"Class Rep {student.full_name} reported that {course.code} on {session.session_date} was {status_text}. Reason: {reason_clean}"
+
+            for lecturer in course.lecturers.all():
+                if lecturer.user:
+                    dispatch_event_notification(
+                        recipient=lecturer.user,
+                        notification_type=Notification.NotificationType.REPORT_SUBMITTED,
+                        title=title,
+                        body=body,
+                        related_model="ClassRepReport",
+                        related_id=report.id,
+                    )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to dispatch report submission notification: {e}")
+
     return report
 
 
@@ -151,4 +176,25 @@ def submit_lecturer_response(report, lecturer_user, response_text):
     report.lecturer_response = response_text
     report.lecturer_responded_at = timezone.now()
     report.save()
+
+    # Notify class rep that lecturer responded
+    try:
+        from notifications.models import Notification
+        from notifications.services import dispatch_event_notification
+
+        if report.reported_by and report.reported_by.user:
+            course = report.lecture_session.timetable_entry.course if report.lecture_session and report.lecture_session.timetable_entry else None
+            course_code = course.code if course else "Course"
+            dispatch_event_notification(
+                recipient=report.reported_by.user,
+                notification_type=Notification.NotificationType.REPORT_RESPONDED,
+                title=f"Lecturer Response: {course_code}",
+                body=f"Lecturer responded to your report for {course_code}: \"{response_text[:120]}\"",
+                related_model="ClassRepReport",
+                related_id=report.id,
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to dispatch report response notification: {e}")
+
     return report

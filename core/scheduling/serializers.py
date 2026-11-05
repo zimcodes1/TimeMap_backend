@@ -911,7 +911,45 @@ class ExamSittingSerializer(serializers.ModelSerializer):
             else:
                 validated_data["registered_candidates_count"] = 0
 
-        return super().create(validated_data)
+        sitting = super().create(validated_data)
+        self._notify_invigilators(sitting)
+        return sitting
+
+    def update(self, instance, validated_data):
+        old_invigilators = set(instance.invigilators.all())
+        sitting = super().update(instance, validated_data)
+        new_invigilators = set(sitting.invigilators.all()) - old_invigilators
+        if new_invigilators:
+            self._notify_invigilators(sitting, invigilators=new_invigilators)
+        return sitting
+
+    def _notify_invigilators(self, sitting, invigilators=None):
+        try:
+            from notifications.models import Notification
+            from notifications.services import dispatch_event_notification
+
+            entry = sitting.timetable_entry
+            if not entry:
+                return
+            course_code = entry.course.code if entry.course else entry.title
+            date_str = str(entry.recurrence_start_date or "")
+            time_str = f"{entry.start_time.strftime('%H:%M')} - {entry.end_time.strftime('%H:%M')}"
+            venue_name = entry.venue.name if entry.venue else "Assigned Venue"
+
+            target_invigilators = invigilators if invigilators is not None else sitting.invigilators.all()
+            for inv in target_invigilators:
+                if inv.user:
+                    dispatch_event_notification(
+                        recipient=inv.user,
+                        notification_type=Notification.NotificationType.EXAM_INVIGILATOR_ASSIGNED,
+                        title=f"Invigilation Duty: {course_code}",
+                        body=f"You have been assigned to invigilate {course_code} on {date_str} at {venue_name} ({time_str}).",
+                        related_model="ExamSitting",
+                        related_id=sitting.id,
+                    )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to notify invigilators: {e}")
 
 
 class GenerationScopePermissionSerializer(serializers.ModelSerializer):

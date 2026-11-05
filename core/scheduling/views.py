@@ -654,66 +654,31 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
 
         updated_session = serializer.save()
 
-        # Dispatch SESSION_SHIFTED notification
+        # Dispatch SESSION_SHIFTED notification to all course recipients (students, lecturers, reps)
         if updated_session.status == LectureSession.Status.SHIFTED:
             try:
                 from notifications.models import Notification
-                from notifications.services import dispatch_event_notification
-                from accounts.models import Student
+                from notifications.services import resolve_course_recipients, dispatch_event_notifications_bulk
 
                 course = updated_session.timetable_entry.course
                 if course:
-                    notified_user_ids = set()
+                    recipients = resolve_course_recipients(course)
+                    if request.user.is_authenticated and request.user not in recipients:
+                        recipients.append(request.user)
 
-                    # 1. Notify assigned lecturers (including initiating lecturer for confirmation)
-                    for lecturer in course.lecturers.all():
-                        if lecturer.user and lecturer.user.id not in notified_user_ids:
-                            dispatch_event_notification(
-                                recipient=lecturer.user,
-                                notification_type=Notification.NotificationType.SESSION_SHIFTED,
-                                title=f"Session Shifted: {course.code}",
-                                body=f"Session for {course.code} on {updated_session.session_date} was shifted to {updated_session.venue.name} ({updated_session.session_start_time.strftime('%H:%M')} - {updated_session.session_end_time.strftime('%H:%M')}).",
-                                related_model="LectureSession",
-                                related_id=updated_session.id,
-                            )
-                            notified_user_ids.add(lecturer.user.id)
-
-                    # Also notify requesting user if lecturer
-                    if request.user.is_authenticated and request.user.id not in notified_user_ids:
-                        dispatch_event_notification(
-                            recipient=request.user,
-                            notification_type=Notification.NotificationType.SESSION_SHIFTED,
-                            title=f"Session Shifted: {course.code}",
-                            body=f"Session for {course.code} on {updated_session.session_date} was successfully shifted to {updated_session.venue.name} ({updated_session.session_start_time.strftime('%H:%M')} - {updated_session.session_end_time.strftime('%H:%M')}).",
-                            related_model="LectureSession",
-                            related_id=updated_session.id,
-                        )
-                        notified_user_ids.add(request.user.id)
-
-                    # 2. Notify class reps (target program, owning department, or access-granted departments)
-                    from django.db.models import Q
-                    rep_conds = Q()
-                    if course.target_program_id:
-                        rep_conds |= Q(program_id=course.target_program_id)
-                    if course.owning_department_id:
-                        rep_conds |= Q(department_id=course.owning_department_id)
-
-                    granted_depts = course.access_grants.filter(status="approved").values_list("granted_to_department_id", flat=True)
-                    if granted_depts:
-                        rep_conds |= Q(department_id__in=granted_depts)
-
-                    class_reps = Student.objects.filter(is_class_rep=True, level=course.level).filter(rep_conds).distinct()
-                    for rep in class_reps:
-                        if rep.user and rep.user.id not in notified_user_ids:
-                            dispatch_event_notification(
-                                recipient=rep.user,
-                                notification_type=Notification.NotificationType.SESSION_SHIFTED,
-                                title=f"Lecture Shifted: {course.code}",
-                                body=f"Lecture for {course.code} on {updated_session.session_date} was shifted to {updated_session.venue.name} ({updated_session.session_start_time.strftime('%H:%M')} - {updated_session.session_end_time.strftime('%H:%M')}).",
-                                related_model="LectureSession",
-                                related_id=updated_session.id,
-                            )
-                            notified_user_ids.add(rep.user.id)
+                    body_msg = (
+                        f"Lecture for {course.code} on {updated_session.session_date} was shifted to "
+                        f"{updated_session.venue.name} ({updated_session.session_start_time.strftime('%H:%M')} - "
+                        f"{updated_session.session_end_time.strftime('%H:%M')})."
+                    )
+                    dispatch_event_notifications_bulk(
+                        recipients=recipients,
+                        notification_type=Notification.NotificationType.SESSION_SHIFTED,
+                        title=f"Lecture Shifted: {course.code}",
+                        body=body_msg,
+                        related_model="LectureSession",
+                        related_id=updated_session.id,
+                    )
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).error(f"Failed to dispatch session shift notification: {e}")
@@ -782,8 +747,7 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
 
         try:
             from notifications.models import Notification
-            from notifications.services import dispatch_event_notification
-            from accounts.models import Student
+            from notifications.services import resolve_course_recipients, dispatch_event_notifications_bulk
 
             course = session.timetable_entry.course
             if course:
@@ -791,33 +755,103 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
                 if reason:
                     body_msg += f" Reason: {reason}"
 
-                for lecturer in course.lecturers.all():
-                    if lecturer.user_id != request.user.id:
-                        dispatch_event_notification(
-                            recipient=lecturer.user,
-                            notification_type=Notification.NotificationType.SESSION_CANCELLED,
-                            title=f"Lecture Cancelled: {course.code}",
-                            body=body_msg,
-                            related_model="LectureSession",
-                            related_id=session.id,
-                        )
-                class_reps = Student.objects.filter(is_class_rep=True, level=course.level)
-                if course.target_program_id:
-                    class_reps = class_reps.filter(program_id=course.target_program_id)
-                elif course.owning_department_id:
-                    class_reps = class_reps.filter(department_id=course.owning_department_id)
-                for rep in class_reps:
-                    dispatch_event_notification(
-                        recipient=rep.user,
-                        notification_type=Notification.NotificationType.SESSION_CANCELLED,
-                        title=f"Lecture Cancelled: {course.code}",
-                        body=body_msg,
-                        related_model="LectureSession",
-                        related_id=session.id,
-                    )
+                recipients = resolve_course_recipients(course)
+                dispatch_event_notifications_bulk(
+                    recipients=recipients,
+                    notification_type=Notification.NotificationType.SESSION_CANCELLED,
+                    title=f"Lecture Cancelled: {course.code}",
+                    body=body_msg,
+                    related_model="LectureSession",
+                    related_id=session.id,
+                )
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to dispatch session cancel notification: {e}")
+
+        return Response(self.get_serializer(session).data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Postpone a lecture session instance", responses={200: LectureSessionSerializer})
+    @action(detail=True, methods=["post"], url_path="postpone")
+    def postpone(self, request, pk=None):
+        session = self.get_object()
+
+        admin_profile = getattr(request.user, "admin_profile", None)
+        lecturer_profile = getattr(request.user, "lecturer_profile", None)
+        is_authorized = False
+        if request.user.is_superuser:
+            is_authorized = True
+        elif request.user.role == "lecturer" and lecturer_profile:
+            course = getattr(session.timetable_entry, "course", None)
+            if course and course.lecturers.filter(id=lecturer_profile.id).exists():
+                is_authorized = True
+        elif admin_profile:
+            if getattr(admin_profile, "is_exam_officer", False):
+                return Response(
+                    {"detail": "Exam Officers cannot postpone lecture sessions."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            from accounts.models import AdminOfficer
+            if admin_profile.level == AdminOfficer.Level.SCHOOL:
+                is_authorized = True
+            elif session.timetable_entry.created_by_id in (admin_profile.id, getattr(admin_profile, "user_id", None)):
+                is_authorized = True
+            elif admin_profile.level == AdminOfficer.Level.FACULTY and admin_profile.scope_faculty_id:
+                dept = getattr(session.timetable_entry.course, "owning_department", None)
+                if dept and dept.faculty_id == admin_profile.scope_faculty_id:
+                    is_authorized = True
+                elif not session.timetable_entry.course:
+                    if session.venue and getattr(session.venue, "owning_faculty_id", None) == admin_profile.scope_faculty_id:
+                        is_authorized = True
+                    elif session.timetable_entry.target_program and getattr(getattr(session.timetable_entry.target_program, "department", None), "faculty_id", None) == admin_profile.scope_faculty_id:
+                        is_authorized = True
+                    elif session.timetable_entry.entry_type == "event":
+                        is_authorized = True
+            elif admin_profile.level == AdminOfficer.Level.DEPARTMENT and admin_profile.scope_department_id:
+                if getattr(session.timetable_entry.course, "owning_department_id", None) == admin_profile.scope_department_id:
+                    is_authorized = True
+                elif not session.timetable_entry.course:
+                    if session.venue and getattr(session.venue, "owning_department_id", None) == admin_profile.scope_department_id:
+                        is_authorized = True
+                    elif session.timetable_entry.target_program and getattr(session.timetable_entry.target_program, "department_id", None) == admin_profile.scope_department_id:
+                        is_authorized = True
+                    elif session.timetable_entry.entry_type == "event":
+                        is_authorized = True
+
+        if not is_authorized:
+            return Response(
+                {"detail": "You do not have jurisdiction to postpone this session instance."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if session.status == LectureSession.Status.POSTPONED:
+            return Response({"detail": "Session is already postponed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reason = request.data.get("reason", "")
+        session.status = LectureSession.Status.POSTPONED
+        session.save(update_fields=["status"])
+
+        try:
+            from notifications.models import Notification
+            from notifications.services import resolve_course_recipients, dispatch_event_notifications_bulk
+
+            course = session.timetable_entry.course
+            if course:
+                body_msg = f"Lecture for {course.code} on {session.session_date} ({session.session_start_time.strftime('%H:%M')} - {session.session_end_time.strftime('%H:%M')}) has been POSTPONED."
+                if reason:
+                    body_msg += f" Reason: {reason}"
+
+                recipients = resolve_course_recipients(course)
+                dispatch_event_notifications_bulk(
+                    recipients=recipients,
+                    notification_type=Notification.NotificationType.SESSION_POSTPONED,
+                    title=f"Lecture Postponed: {course.code}",
+                    body=body_msg,
+                    related_model="LectureSession",
+                    related_id=session.id,
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to dispatch session postpone notification: {e}")
 
         return Response(self.get_serializer(session).data, status=status.HTTP_200_OK)
 
@@ -1323,6 +1357,36 @@ class ExamOptimizerViewSet(viewsets.ViewSet):
         run.published_by = request.user
         run.published_at = now
         run.save(update_fields=["status", "published_by", "published_at"])
+
+        # Dispatch EXAM_PUBLISHED notification to students and lecturers
+        try:
+            from notifications.models import Notification
+            from notifications.services import resolve_course_recipients, dispatch_event_notifications_bulk
+            from courses.models import Course
+
+            events = run.events or []
+            course_ids = {ev.get("course_id") for ev in events if ev.get("course_id")}
+            notified_users = set()
+            for c_id in course_ids:
+                course = Course.objects.filter(id=c_id).first()
+                if course:
+                    for u in resolve_course_recipients(course, semester=run.semester):
+                        notified_users.add(u)
+
+            if notified_users:
+                sem_label = run.semester.get_name_display() if run.semester else "Semester"
+                dispatch_event_notifications_bulk(
+                    recipients=list(notified_users),
+                    notification_type=Notification.NotificationType.EXAM_PUBLISHED,
+                    title=f"Exam Timetable Published: {sem_label}",
+                    body=f"The examination timetable for {sem_label} has been published. Please check your schedule on TimeMap.",
+                    related_model="ExamOptimizerRun",
+                    related_id=run.id,
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to dispatch exam publish notification: {e}")
+
         return Response(self._serialize_run(run))
 
     @action(detail=False, methods=["get", "post"], url_path="export-problem")
