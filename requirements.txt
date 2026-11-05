@@ -206,6 +206,8 @@ python-crontab==3.4.0
     # via django-celery-beat
 python-dateutil==2.9.0.post0
     # via celery
+python-dotenv==1.2.4
+    # via backend (pyproject.toml)
 pytokens==0.4.1
     # via black
 pyyaml==5.4.1
