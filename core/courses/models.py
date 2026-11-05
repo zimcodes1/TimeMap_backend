@@ -10,9 +10,25 @@ class Course(models.Model):
         SCHOOL = "school", "School"
         GENERAL = "general", "General"
 
+    class CourseType(models.TextChoices):
+        LECTURE = "lecture", "Lecture"
+        PRACTICAL = "practical", "Practical"
+
     code = models.CharField(max_length=20, unique=True)
     title = models.CharField(max_length=255)
     level = models.IntegerField()
+    course_type = models.CharField(
+        max_length=20, choices=CourseType.choices, default=CourseType.LECTURE
+    )
+    required_occurrences_per_week = models.PositiveIntegerField(default=1)
+    class ExamType(models.TextChoices):
+        WRITTEN = "written", "Written"
+        CBT = "cbt", "CBT"
+        LAB_PRACTICAL = "lab_practical", "Lab practical"
+
+    exam_type = models.CharField(max_length=20, choices=ExamType.choices, default=ExamType.CBT)
+    exam_duration_minutes = models.PositiveIntegerField(null=True, blank=True)
+    exam_duration_per_student_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
 
     owning_level = models.CharField(max_length=20, choices=OwningLevel.choices)
     owning_department = models.ForeignKey(

@@ -7,6 +7,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from rest_framework_simplejwt.tokens import RefreshToken
+
 from .models import AdminOfficer, LecturerStaff, Student, User
 from .permissions import (
     IsAdminUserRole,
@@ -22,6 +24,7 @@ from .serializers import (
     LoginSerializer,
     PasswordResetSerializer,
     StudentProfileSerializer,
+    StudentRegistrationSerializer,
     UserSerializer,
 )
 
@@ -50,6 +53,66 @@ class LoginView(APIView):
                     "profile": serializer.validated_data["profile"],
                 },
                 status=status.HTTP_200_OK,
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RegistrationOptionsView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="Get Public Registration Hierarchy Options",
+        description="Returns faculties, departments, and programs for student registration.",
+    )
+    def get(self, request):
+        from hierarchy.models import Department, Faculty, Program
+
+        faculties = Faculty.objects.order_by("name").values("id", "name", "code")
+        departments = Department.objects.order_by("name").values("id", "name", "code", "faculty_id")
+        programs = Program.objects.order_by("name").values(
+            "id", "name", "code", "department_id", "max_level", "is_default"
+        )
+
+        return Response(
+            {
+                "faculties": list(faculties),
+                "departments": list(departments),
+                "programs": list(programs),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class StudentSignupView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = StudentRegistrationSerializer
+
+    @extend_schema(
+        request=StudentRegistrationSerializer,
+        summary="Student Self-Registration",
+        description="Creates a new student account and returns JWT tokens, user, and profile.",
+    )
+    def post(self, request):
+        serializer = StudentRegistrationSerializer(data=request.data)
+        if serializer.is_valid():
+            student = serializer.save()
+            user = student.user
+            user.last_login_at = timezone.now()
+            user.save(update_fields=["last_login_at"])
+
+            refresh = RefreshToken.for_user(user)
+
+            return Response(
+                {
+                    "user": UserSerializer(user).data,
+                    "tokens": {
+                        "refresh": str(refresh),
+                        "access": str(refresh.access_token),
+                    },
+                    "requires_password_reset": False,
+                    "profile": StudentProfileSerializer(student).data,
+                },
+                status=status.HTTP_201_CREATED,
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -91,8 +154,19 @@ class UserProfileView(APIView):
             profile_data = StudentProfileSerializer(user.student_profile).data
         elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
             profile_data = LecturerProfileSerializer(user.lecturer_profile).data
-        elif user.role == "admin" and hasattr(user, "admin_profile"):
-            profile_data = AdminProfileSerializer(user.admin_profile).data
+        elif user.role in ["admin", "system_admin"] or user.is_superuser:
+            if not hasattr(user, "admin_profile") and user.is_superuser:
+                AdminOfficer.objects.get_or_create(
+                    user=user,
+                    defaults={
+                        "staff_id": user.identifier,
+                        "full_name": f"System Administrator ({user.identifier})",
+                        "level": AdminOfficer.Level.SYSTEM,
+                        "email": "",
+                    },
+                )
+            if hasattr(user, "admin_profile"):
+                profile_data = AdminProfileSerializer(user.admin_profile).data
 
         return Response(
             {

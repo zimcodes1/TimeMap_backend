@@ -32,15 +32,30 @@ class ClassRepReportViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = ClassRepReport.objects.all()
+        qs = ClassRepReport.objects.select_related(
+            "reported_by",
+            "lecture_session",
+            "lecture_session__venue",
+            "lecture_session__timetable_entry",
+            "lecture_session__timetable_entry__venue",
+            "lecture_session__timetable_entry__course",
+        ).prefetch_related(
+            "lecture_session__timetable_entry__course__lecturers",
+        )
 
         if user.role == "student" and hasattr(user, "student_profile"):
+            if not user.student_profile.is_class_rep:
+                return ClassRepReport.objects.none()
             qs = qs.filter(reported_by=user.student_profile)
         elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
             qs = qs.filter(lecture_session__timetable_entry__course__lecturers=user.lecturer_profile)
         elif user.role == "admin" and hasattr(user, "admin_profile"):
+            if getattr(user.admin_profile, "is_exam_officer", False):
+                return ClassRepReport.objects.none()
             dept_qs = get_user_scope_departments(user)
             qs = qs.filter(lecture_session__timetable_entry__course__owning_department__in=dept_qs)
+        else:
+            return ClassRepReport.objects.none()
 
         # Filters
         held_param = self.request.query_params.get("held")
@@ -77,7 +92,7 @@ class UnreportedSessionFlagViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
 
     def get_queryset(self):
         user = self.request.user
-        if user.role != "admin" or not hasattr(user, "admin_profile"):
+        if user.role != "admin" or not hasattr(user, "admin_profile") or getattr(user.admin_profile, "is_exam_officer", False):
             return UnreportedSessionFlag.objects.none()
 
         dept_qs = get_user_scope_departments(user)
@@ -105,13 +120,32 @@ class AnalyticsViewSet(viewsets.ViewSet):
     @extend_schema(summary="Get lecture-hold rate analytics summary & breakdown", parameters=[AnalyticsQueryParamsSerializer], responses={200: dict})
     @action(detail=False, methods=["get"], url_path="lecture-hold-rate")
     def lecture_hold_rate(self, request):
+        if getattr(getattr(request.user, "admin_profile", None), "is_exam_officer", False):
+            return Response(
+                {"detail": "Exam Officers do not have access to lecture attendance analytics."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         from .analytics import get_lecture_hold_rate_analytics
+        dept_id = request.query_params.get("department_id")
+        faculty_id = request.query_params.get("faculty_id")
+        is_faculty_admin = (
+            hasattr(request.user, "admin_profile")
+            and getattr(request.user.admin_profile, "level", None) == "faculty"
+        )
+        if not faculty_id and is_faculty_admin and getattr(request.user.admin_profile, "scope_faculty_id", None):
+            faculty_id = str(request.user.admin_profile.scope_faculty_id)
+
         data = get_lecture_hold_rate_analytics(
             user=request.user,
             start_date=request.query_params.get("start_date"),
             end_date=request.query_params.get("end_date"),
-            department_id=request.query_params.get("department_id"),
+            department_id=dept_id,
+            faculty_id=faculty_id,
             course_id=request.query_params.get("course_id"),
+            level=request.query_params.get("level"),
+            program_id=request.query_params.get("program_id"),
+            lecturer_id=request.query_params.get("lecturer_id"),
+            semester_id=request.query_params.get("semester_id"),
             group_by=request.query_params.get("group_by", "course"),
         )
         return Response(data, status=status.HTTP_200_OK)
@@ -120,18 +154,44 @@ class AnalyticsViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["get"], url_path="venue-utilization")
     def venue_utilization(self, request):
         from .analytics import get_venue_utilization_analytics
+        dept_id = request.query_params.get("department_id")
+        faculty_id = request.query_params.get("faculty_id")
+        is_faculty_admin = (
+            hasattr(request.user, "admin_profile")
+            and getattr(request.user.admin_profile, "level", None) == "faculty"
+        )
+        if not faculty_id and is_faculty_admin and getattr(request.user.admin_profile, "scope_faculty_id", None):
+            faculty_id = str(request.user.admin_profile.scope_faculty_id)
+
+        faculty_owned_param = request.query_params.get("faculty_owned_only")
+        if faculty_owned_param is not None:
+            faculty_owned_only = str(faculty_owned_param).lower() in ["true", "1"]
+        elif is_faculty_admin and not dept_id:
+            faculty_owned_only = True
+        else:
+            faculty_owned_only = False
+
         data = get_venue_utilization_analytics(
             user=request.user,
             start_date=request.query_params.get("start_date"),
             end_date=request.query_params.get("end_date"),
+            department_id=dept_id,
+            faculty_id=faculty_id,
             venue_id=request.query_params.get("venue_id"),
+            semester_id=request.query_params.get("semester_id"),
             group_by=request.query_params.get("group_by", "venue"),
+            faculty_owned_only=faculty_owned_only,
         )
         return Response(data, status=status.HTTP_200_OK)
 
     @extend_schema(summary="Get discrepancy frequency analytics summary", parameters=[AnalyticsQueryParamsSerializer], responses={200: dict})
     @action(detail=False, methods=["get"], url_path="discrepancy-frequency")
     def discrepancy_frequency(self, request):
+        if getattr(getattr(request.user, "admin_profile", None), "is_exam_officer", False):
+            return Response(
+                {"detail": "Exam Officers do not have access to venue discrepancy analytics."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         from .analytics import get_discrepancy_frequency_analytics
         data = get_discrepancy_frequency_analytics(
             user=request.user,
@@ -141,4 +201,29 @@ class AnalyticsViewSet(viewsets.ViewSet):
             request_type=request.query_params.get("request_type"),
             group_by=request.query_params.get("group_by", "venue"),
         )
+        return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Get role-based dashboard statcards", responses={200: dict})
+    @action(detail=False, methods=["get"], url_path="dashboard-statcards")
+    def dashboard_statcards(self, request):
+        from .analytics import get_dashboard_statcards
+        data = get_dashboard_statcards(user=request.user)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Get scope-specific venue capacity deficit analytics", responses={200: dict})
+    @action(detail=False, methods=["get"], url_path="capacity-deficit")
+    def capacity_deficit(self, request):
+        from .analytics import get_venue_capacity_deficit_analytics
+        semester_id = request.query_params.get("semester_id")
+        data = get_venue_capacity_deficit_analytics(
+            user=request.user,
+            semester_id=semester_id,
+        )
+        return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(summary="Get exam analytics summary & breakdown", responses={200: dict})
+    @action(detail=False, methods=["get"], url_path="exam-analytics")
+    def exam_analytics(self, request):
+        from .analytics import get_exam_analytics
+        data = get_exam_analytics(user=request.user, semester_id=request.query_params.get("semester_id"))
         return Response(data, status=status.HTTP_200_OK)

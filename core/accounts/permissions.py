@@ -35,9 +35,9 @@ def get_user_scope_departments(user):
     if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
         return Department.objects.all()
 
-    if user.role == "admin" and hasattr(user, "admin_profile"):
+    if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
         admin_prof = user.admin_profile
-        if admin_prof.level == "university":
+        if admin_prof.level in ["system", "university"]:
             return Department.objects.all()
         if admin_prof.level == "school":
             if admin_prof.scope_school:
@@ -73,9 +73,9 @@ def get_user_scope_faculties(user):
     if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
         return Faculty.objects.all()
 
-    if user.role == "admin" and hasattr(user, "admin_profile"):
+    if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
         admin_prof = user.admin_profile
-        if admin_prof.level == "university":
+        if admin_prof.level in ["system", "university"]:
             return Faculty.objects.all()
         if admin_prof.level == "school":
             if admin_prof.scope_school:
@@ -111,9 +111,9 @@ def get_user_scope_schools(user):
     if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
         return School.objects.all()
 
-    if user.role == "admin" and hasattr(user, "admin_profile"):
+    if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
         admin_prof = user.admin_profile
-        if admin_prof.level == "university":
+        if admin_prof.level in ["system", "university"]:
             return School.objects.all()
         if admin_prof.level == "school":
             if admin_prof.scope_school:
@@ -224,14 +224,11 @@ def get_user_scope_admin_officers(user):
     if not user.is_authenticated:
         return AdminOfficer.objects.none()
 
-    if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
-        return AdminOfficer.objects.all()
-
-    if user.role == "admin" and hasattr(user, "admin_profile"):
+    if user.role in ["admin", "system_admin"] and hasattr(user, "admin_profile"):
         admin_prof = user.admin_profile
 
-        if admin_prof.level == "university":
-            # University admins manage school-scoped admins only
+        if admin_prof.level in ["system", "university"]:
+            # System/University admins manage school-scoped admins only
             return AdminOfficer.objects.filter(level="school")
 
         elif admin_prof.level == "school":
@@ -255,6 +252,9 @@ def get_user_scope_admin_officers(user):
         elif admin_prof.level == "department":
             # Department admins do not manage other admins
             return AdminOfficer.objects.none()
+
+    if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
+        return AdminOfficer.objects.all()
 
     return AdminOfficer.objects.none()
 
@@ -294,7 +294,11 @@ class IsPasswordResetDone(BasePermission):
 
 class IsAdminUserRole(BasePermission):
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.role == "admin")
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and (request.user.role in ["admin", "system_admin"] or request.user.is_superuser)
+        )
 
 
 class IsStudentRole(BasePermission):
@@ -305,3 +309,28 @@ class IsStudentRole(BasePermission):
 class IsLecturerRole(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated and request.user.role == "lecturer")
+
+
+def is_user_exam_officer(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and hasattr(user, "admin_profile")
+        and user.admin_profile.is_exam_officer
+    )
+
+
+class IsExamOfficerRole(BasePermission):
+    message = "Only Exam Officers may access this resource."
+
+    def has_permission(self, request, view):
+        return is_user_exam_officer(request.user)
+
+
+class IsNotExamOfficer(BasePermission):
+    message = "Exam Officers do not have permission to access regular lecture or user management operations."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return not is_user_exam_officer(request.user)

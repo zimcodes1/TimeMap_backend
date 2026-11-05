@@ -21,25 +21,27 @@ def _parse_date(date_str):
         raise serializers.ValidationError({"detail": f"Invalid date format '{date_str}'. Use YYYY-MM-DD."})
 
 
-def get_class_rep_analytics(student_user, start_date=None, end_date=None):
+def get_class_rep_analytics(student_user, start_date=None, end_date=None, require_class_rep=True, query_type="class_rep"):
     """
-    Delivers lecture hold analytics for Class Representatives.
+    Delivers lecture hold analytics for Class Representatives or Students.
     Constrained to sessions in their department and level within start_date/end_date.
     """
     if not hasattr(student_user, "student_profile"):
-        raise serializers.ValidationError({"detail": "Only student accounts can access class rep analytics."})
+        raise serializers.ValidationError({"detail": "Only student accounts can access this endpoint."})
 
     student = student_user.student_profile
-    if not student.is_class_rep:
+    if require_class_rep and not student.is_class_rep:
         raise serializers.ValidationError({"detail": "Only designated Class Representatives can access this endpoint."})
 
     start_d = _parse_date(start_date)
     end_d = _parse_date(end_date)
 
-    # Scoped to student's department and level
+    from courses.services import get_visible_courses_for_student
+    visible_courses = get_visible_courses_for_student(student)
+
+    # Scoped to student's visible courses
     sessions = LectureSession.objects.filter(
-        timetable_entry__course__owning_department=student.department,
-        timetable_entry__course__level=student.level,
+        timetable_entry__course__in=visible_courses,
     )
 
     if start_d:
@@ -94,7 +96,7 @@ def get_class_rep_analytics(student_user, start_date=None, end_date=None):
     # Log query
     AnalyticsQueryLog.objects.create(
         user=student_user,
-        query_type="class_rep",
+        query_type=query_type,
         start_date=start_d,
         end_date=end_d,
     )
@@ -118,6 +120,19 @@ def get_class_rep_analytics(student_user, start_date=None, end_date=None):
         },
         "course_breakdown": course_breakdown,
     }
+
+
+def get_student_analytics(student_user, start_date=None, end_date=None):
+    """
+    Delivers lecture hold analytics for Students.
+    """
+    return get_class_rep_analytics(
+        student_user=student_user,
+        start_date=start_date,
+        end_date=end_date,
+        require_class_rep=False,
+        query_type="student",
+    )
 
 
 def get_lecturer_analytics(lecturer_user, start_date=None, end_date=None, course_id=None):

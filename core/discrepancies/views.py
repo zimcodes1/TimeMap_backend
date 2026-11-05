@@ -26,11 +26,22 @@ from .services import (
 
 class DiscrepancyRequestViewSet(viewsets.ModelViewSet):
     serializer_class = DiscrepancyRequestSerializer
-    permission_classes = [IsAuthenticated, IsPasswordResetDone, IsAdminUserRole]
+    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+
+    def get_permissions(self):
+        if self.action in ["approve", "reject"]:
+            return [IsAuthenticated(), IsPasswordResetDone(), IsAdminUserRole()]
+        return [IsAuthenticated(), IsPasswordResetDone()]
 
     def get_queryset(self):
         user = self.request.user
-        if not user.is_authenticated or user.role != "admin" or not hasattr(user, "admin_profile") or not user.admin_profile:
+        if not user.is_authenticated:
+            return DiscrepancyRequest.objects.none()
+
+        if user.role == "lecturer":
+            return DiscrepancyRequest.objects.filter(initiated_by=user).order_by("-created_at")
+
+        if user.role != "admin" or not hasattr(user, "admin_profile") or not user.admin_profile:
             return DiscrepancyRequest.objects.none()
 
         admin_prof = user.admin_profile
@@ -153,12 +164,15 @@ class AuditLogViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets
 
     def get_queryset(self):
         user = self.request.user
-        if user.role != "admin" or not hasattr(user, "admin_profile"):
+        is_system_admin = (
+            user.is_superuser
+            or (
+                user.role in ["admin", "system_admin"]
+                and hasattr(user, "admin_profile")
+                and user.admin_profile.level in ["system", "university"]
+            )
+        )
+        if not is_system_admin:
             return AuditLog.objects.filter(actor=user).order_by("-timestamp")
 
-        # Admin scope filtering
-        dept_qs = get_user_scope_departments(user)
-        dept_ids = list(dept_qs.values_list("id", flat=True))
-
-        # Return audit logs created by actor in scope or targeting objects in scope
         return AuditLog.objects.order_by("-timestamp")

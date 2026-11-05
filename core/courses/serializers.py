@@ -3,7 +3,7 @@ from hierarchy.models import Department, Faculty, School
 from rest_framework import serializers
 
 from .models import Course, CourseAccessGrant, CourseRegistration
-from .services import get_visible_courses_for_student
+from .services import calculate_course_student_count, get_visible_courses_for_student
 
 
 class CourseSerializer(serializers.ModelSerializer):
@@ -11,10 +11,14 @@ class CourseSerializer(serializers.ModelSerializer):
     owning_faculty_name = serializers.ReadOnlyField(source="owning_faculty.name")
     owning_school_name = serializers.ReadOnlyField(source="owning_school.name")
     semester_name = serializers.ReadOnlyField(source="semester.get_name_display")
+    semester_code = serializers.ReadOnlyField(source="semester.name")
     session_label = serializers.ReadOnlyField(source="semester.session.label")
     target_program_name = serializers.ReadOnlyField(source="target_program.name")
     target_program_code = serializers.ReadOnlyField(source="target_program.code")
     registration_count = serializers.SerializerMethodField()
+    is_granted_to_scope = serializers.BooleanField(read_only=True, default=False)
+    can_edit_exam_settings = serializers.BooleanField(read_only=True, default=False)
+    applicable_program_ids = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -23,6 +27,11 @@ class CourseSerializer(serializers.ModelSerializer):
             "code",
             "title",
             "level",
+            "course_type",
+            "required_occurrences_per_week",
+            "exam_type",
+            "exam_duration_minutes",
+            "exam_duration_per_student_minutes",
             "owning_level",
             "owning_department",
             "owning_department_name",
@@ -32,6 +41,7 @@ class CourseSerializer(serializers.ModelSerializer):
             "owning_school_name",
             "semester",
             "semester_name",
+            "semester_code",
             "session_label",
             "program_scope",
             "target_program",
@@ -39,11 +49,23 @@ class CourseSerializer(serializers.ModelSerializer):
             "target_program_code",
             "lecturers",
             "registration_count",
+            "is_granted_to_scope",
+            "can_edit_exam_settings",
+            "applicable_program_ids",
         )
-        read_only_fields = ("id",)
+        read_only_fields = ("id", "is_granted_to_scope", "can_edit_exam_settings", "applicable_program_ids")
+
+    def get_applicable_program_ids(self, obj):
+        try:
+            from .services import get_course_attributed_programs
+            return list(get_course_attributed_programs(obj))
+        except Exception:
+            return []
 
     def get_registration_count(self, obj):
-        return obj.student_registrations.count()
+        if hasattr(obj, "_cached_registration_count"):
+            return obj._cached_registration_count
+        return calculate_course_student_count(obj)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -66,6 +88,112 @@ class CourseSerializer(serializers.ModelSerializer):
                     data["owning_school"] = fac.school.id
                 if not data.get("owning_school_name"):
                     data["owning_school_name"] = fac.school.name
+
+        data["lecturers_details"] = [
+            {
+                "id": lec.id,
+                "staff_id": lec.staff_id,
+                "name": lec.full_name,
+                "email": lec.email or "",
+                "department_id": lec.department_id,
+                "department_name": lec.department.name if lec.department else "",
+            }
+            for lec in instance.lecturers.all()
+        ]
+
+        # Check if course is owned by the user's scope or granted to it
+        is_granted_to_scope = False
+        scope_grant_id = None
+        active_grants_data = []
+        can_edit_exam_settings = False
+        request = self.context.get("request")
+        if request and request.user and request.user.is_authenticated:
+            user = request.user
+            admin_prof = getattr(user, "admin_profile", None)
+            if admin_prof:
+                level = admin_prof.level
+                is_eo = getattr(admin_prof, "is_exam_officer", False)
+                is_owned = False
+
+                if level == "department" and admin_prof.scope_department_id:
+                    is_owned = (
+                        instance.owning_level == Course.OwningLevel.DEPARTMENT
+                        and instance.owning_department_id == admin_prof.scope_department_id
+                    )
+                elif level == "faculty" and admin_prof.scope_faculty_id:
+                    is_owned = (
+                        instance.owning_level == Course.OwningLevel.FACULTY
+                        and instance.owning_faculty_id == admin_prof.scope_faculty_id
+                    )
+                elif level == "school" and admin_prof.scope_school_id:
+                    is_owned = (
+                        instance.owning_level == Course.OwningLevel.SCHOOL
+                        and instance.owning_school_id == admin_prof.scope_school_id
+                    )
+                elif user.is_superuser:
+                    is_owned = True
+
+                for grant in instance.access_grants.all():
+                    if grant.status == CourseAccessGrant.Status.APPROVED:
+                        if is_owned:
+                            recipient_label = (
+                                (grant.granted_to_department.name if grant.granted_to_department else "")
+                                or (grant.granted_to_faculty.name if grant.granted_to_faculty else "")
+                                or (grant.granted_to_school.name if grant.granted_to_school else "")
+                                or "All Scopes"
+                            )
+                            active_grants_data.append({
+                                "id": grant.id,
+                                "granted_to_level": grant.granted_to_level,
+                                "granted_to_department_id": grant.granted_to_department_id,
+                                "granted_to_department_name": grant.granted_to_department.name if grant.granted_to_department else None,
+                                "granted_to_faculty_id": grant.granted_to_faculty_id,
+                                "granted_to_faculty_name": grant.granted_to_faculty.name if grant.granted_to_faculty else None,
+                                "granted_to_school_id": grant.granted_to_school_id,
+                                "granted_to_school_name": grant.granted_to_school.name if grant.granted_to_school else None,
+                                "grant_scope": grant.grant_scope,
+                                "target_program_id": grant.target_program_id,
+                                "target_program_name": grant.target_program.name if grant.target_program else None,
+                                "recipient_label": recipient_label,
+                                "status": grant.status,
+                            })
+                        else:
+                            if level == "department" and admin_prof.scope_department_id and grant.granted_to_department_id == admin_prof.scope_department_id:
+                                is_granted_to_scope = True
+                                scope_grant_id = grant.id
+                            elif level == "faculty" and admin_prof.scope_faculty_id and grant.granted_to_faculty_id == admin_prof.scope_faculty_id:
+                                is_granted_to_scope = True
+                                scope_grant_id = grant.id
+                            elif level == "school" and admin_prof.scope_school_id and grant.granted_to_school_id == admin_prof.scope_school_id:
+                                is_granted_to_scope = True
+                                scope_grant_id = grant.id
+
+                has_scope_eo = getattr(request, "_cached_has_scope_eo", None)
+                if has_scope_eo is None:
+                    if is_eo:
+                        has_scope_eo = True
+                    elif level == "department" and admin_prof.scope_department_id:
+                        has_scope_eo = AdminOfficer.objects.filter(
+                            is_exam_officer=True, user__is_active=True, scope_department_id=admin_prof.scope_department_id
+                        ).exists()
+                    elif level == "faculty" and admin_prof.scope_faculty_id:
+                        has_scope_eo = AdminOfficer.objects.filter(
+                            is_exam_officer=True, user__is_active=True, scope_faculty_id=admin_prof.scope_faculty_id
+                        ).exists()
+                    elif level == "school" and admin_prof.scope_school_id:
+                        has_scope_eo = AdminOfficer.objects.filter(
+                            is_exam_officer=True, user__is_active=True, scope_school_id=admin_prof.scope_school_id
+                        ).exists()
+                    else:
+                        has_scope_eo = False
+                    setattr(request, "_cached_has_scope_eo", has_scope_eo)
+
+                can_edit_exam_settings = is_owned and (is_eo or not has_scope_eo)
+
+        data["is_granted_to_scope"] = is_granted_to_scope
+        data["scope_grant_id"] = scope_grant_id
+        data["active_grants"] = active_grants_data
+        data["can_edit_exam_settings"] = can_edit_exam_settings
         return data
 
     def validate_code(self, value):
@@ -77,6 +205,106 @@ class CourseSerializer(serializers.ModelSerializer):
             return attrs
 
         user = request.user
+
+        # Exam officer validation: cannot create courses, can only edit exam fields on owned courses
+        if (user.role in ["admin", "system_admin"] or user.is_superuser) and hasattr(user, "admin_profile"):
+            admin_prof = user.admin_profile
+            is_eo = getattr(admin_prof, "is_exam_officer", False)
+            level = admin_prof.level
+
+            is_owned = False
+            if level == "department" and admin_prof.scope_department_id:
+                is_owned = bool(
+                    self.instance
+                    and self.instance.owning_level == Course.OwningLevel.DEPARTMENT
+                    and self.instance.owning_department_id == admin_prof.scope_department_id
+                )
+            elif level == "faculty" and admin_prof.scope_faculty_id:
+                is_owned = bool(
+                    self.instance
+                    and self.instance.owning_level == Course.OwningLevel.FACULTY
+                    and self.instance.owning_faculty_id == admin_prof.scope_faculty_id
+                )
+            elif level == "school" and admin_prof.scope_school_id:
+                is_owned = bool(
+                    self.instance
+                    and self.instance.owning_level == Course.OwningLevel.SCHOOL
+                    and self.instance.owning_school_id == admin_prof.scope_school_id
+                )
+            elif user.is_superuser:
+                is_owned = True
+
+            EXAM_FIELDS = {"exam_type", "exam_duration_minutes", "exam_duration_per_student_minutes"}
+            changed_fields = set()
+            if self.instance:
+                for key, val in attrs.items():
+                    if getattr(self.instance, key, None) != val:
+                        changed_fields.add(key)
+            else:
+                changed_fields = set(attrs.keys())
+
+            exam_fields_changed = bool(changed_fields & EXAM_FIELDS)
+
+            if is_eo:
+                if not self.instance:
+                    raise serializers.ValidationError("Exam officers cannot create courses.")
+                disallowed = changed_fields - EXAM_FIELDS
+                if disallowed:
+                    raise serializers.ValidationError(
+                        f"Exam officers can only modify exam settings (exam_type, exam_duration_minutes, exam_duration_per_student_minutes). Cannot modify: {', '.join(sorted(disallowed))}."
+                    )
+                if not is_owned:
+                    raise serializers.ValidationError(
+                        "Exam officers can only configure courses that are within and from their scope."
+                    )
+            elif exam_fields_changed and self.instance:
+                if not is_owned:
+                    raise serializers.ValidationError(
+                        "Courses can only be configured by their originating scope's exam officer or admin."
+                    )
+                # Check if an exam officer exists for this scope; if so, admin cannot configure exam settings
+                has_scope_eo = getattr(request, "_cached_has_scope_eo", None)
+                if has_scope_eo is None:
+                    if level == "department" and admin_prof.scope_department_id:
+                        has_scope_eo = AdminOfficer.objects.filter(
+                            is_exam_officer=True, user__is_active=True, scope_department_id=admin_prof.scope_department_id
+                        ).exists()
+                    elif level == "faculty" and admin_prof.scope_faculty_id:
+                        has_scope_eo = AdminOfficer.objects.filter(
+                            is_exam_officer=True, user__is_active=True, scope_faculty_id=admin_prof.scope_faculty_id
+                        ).exists()
+                    elif level == "school" and admin_prof.scope_school_id:
+                        has_scope_eo = AdminOfficer.objects.filter(
+                            is_exam_officer=True, user__is_active=True, scope_school_id=admin_prof.scope_school_id
+                        ).exists()
+                    else:
+                        has_scope_eo = False
+                    setattr(request, "_cached_has_scope_eo", has_scope_eo)
+                if has_scope_eo:
+                    raise serializers.ValidationError(
+                        "An exam officer is assigned to your scope. Exam settings can only be configured by the assigned exam officer."
+                    )
+
+            # CBT examinations should not have a sitting window duration since total duration is calculated via throughput metrics
+            exam_type = attrs.get("exam_type", getattr(self.instance, "exam_type", Course.ExamType.WRITTEN) if self.instance else Course.ExamType.WRITTEN)
+            if exam_type == Course.ExamType.CBT:
+                attrs["exam_duration_minutes"] = None
+                if "exam_duration_per_student_minutes" in attrs:
+                    if not attrs["exam_duration_per_student_minutes"]:
+                        attrs["exam_duration_per_student_minutes"] = 45
+                elif self.instance and not self.instance.exam_duration_per_student_minutes:
+                    attrs["exam_duration_per_student_minutes"] = 45
+            elif exam_type in [Course.ExamType.WRITTEN, Course.ExamType.LAB_PRACTICAL]:
+                attrs["exam_duration_per_student_minutes"] = None
+                if "exam_duration_minutes" in attrs:
+                    if not attrs["exam_duration_minutes"]:
+                        attrs["exam_duration_minutes"] = 120
+                elif self.instance and not self.instance.exam_duration_minutes:
+                    attrs["exam_duration_minutes"] = 120
+
+            if is_eo:
+                return attrs
+
         owning_level = attrs.get("owning_level", self.instance.owning_level if self.instance else None)
         owning_dept = attrs.get("owning_department", self.instance.owning_department if self.instance else None)
         owning_fac = attrs.get("owning_faculty", self.instance.owning_faculty if self.instance else None)
@@ -102,10 +330,10 @@ class CourseSerializer(serializers.ModelSerializer):
             attrs["target_program"] = None
 
         # Creation-time ownership guardrails based on requesting admin's level
-        if user.role == "admin" and hasattr(user, "admin_profile"):
+        if (user.role in ["admin", "system_admin"] or user.is_superuser) and hasattr(user, "admin_profile"):
             admin_prof = user.admin_profile
-            if admin_prof.level == "university":
-                raise serializers.ValidationError("University level admins have view-only access and cannot create or edit courses.")
+            if admin_prof.level in ["system", "university"]:
+                raise serializers.ValidationError("System level admins have view-only access and cannot create or edit courses.")
 
             elif admin_prof.level == "school":
                 if owning_level != Course.OwningLevel.SCHOOL:
@@ -131,6 +359,9 @@ class CourseSerializer(serializers.ModelSerializer):
 class CourseAccessGrantSerializer(serializers.ModelSerializer):
     course_code = serializers.ReadOnlyField(source="course.code")
     course_title = serializers.ReadOnlyField(source="course.title")
+    course_owning_department_name = serializers.ReadOnlyField(source="course.owning_department.name")
+    course_owning_faculty_name = serializers.ReadOnlyField(source="course.owning_faculty.name")
+    course_owning_school_name = serializers.ReadOnlyField(source="course.owning_school.name")
     granted_to_department_name = serializers.ReadOnlyField(source="granted_to_department.name")
     granted_to_faculty_name = serializers.ReadOnlyField(source="granted_to_faculty.name")
     granted_to_school_name = serializers.ReadOnlyField(source="granted_to_school.name")
@@ -145,6 +376,9 @@ class CourseAccessGrantSerializer(serializers.ModelSerializer):
             "course",
             "course_code",
             "course_title",
+            "course_owning_department_name",
+            "course_owning_faculty_name",
+            "course_owning_school_name",
             "granted_to_level",
             "granted_to_department",
             "granted_to_department_name",

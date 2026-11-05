@@ -176,3 +176,54 @@ class CoursesRBACPermissionsTests(APITestCase):
         # Dept 2 admin attempts to delete granted CSC101 -> 403 Forbidden
         del_res = self.client.delete(edit_url)
         self.assertEqual(del_res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_only_grantee_can_undo_access_grant(self):
+        """Only the admin to which access was granted (grantee) can undo the access grant."""
+        # 1. Dept 1 grants CSC101 to Dept 2
+        grant1 = CourseAccessGrant.objects.create(
+            course=self.dept1_course,
+            granted_to_level="department",
+            granted_to_department=self.dept2,
+            direction="offered",
+            status="approved",
+            initiated_by=self.dept1_admin,
+        )
+
+        # Granter (Dept 1) attempts to undo the grant via POST /cancel/ -> 403 Forbidden
+        self.client.force_authenticate(user=self.dept1_user)
+        cancel_url1 = reverse("course-access-grant-cancel", kwargs={"pk": grant1.id})
+        res1 = self.client.post(cancel_url1)
+        self.assertEqual(res1.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(CourseAccessGrant.objects.filter(id=grant1.id).exists())
+
+        # Granter attempts DELETE /api/courses/grants/{id}/ on approved grant -> 403 Forbidden
+        del_url1 = reverse("course-access-grant-detail", kwargs={"pk": grant1.id})
+        res1_del = self.client.delete(del_url1)
+        self.assertEqual(res1_del.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(CourseAccessGrant.objects.filter(id=grant1.id).exists())
+
+        # 2. Grantee (Dept 2) undos the grant via POST /cancel/ -> 200 OK
+        self.client.force_authenticate(user=self.dept2_user)
+        res2 = self.client.post(cancel_url1)
+        self.assertEqual(res2.status_code, status.HTTP_200_OK)
+        self.assertFalse(CourseAccessGrant.objects.filter(id=grant1.id).exists())
+
+        # After undoing, CSC101 is no longer visible to Dept 2 in course list
+        list_res = self.client.get(reverse("course-list"))
+        c_ids = [c["id"] for c in list_res.data]
+        self.assertNotIn(self.dept1_course.id, c_ids)
+
+        # 3. Verify DELETE /api/courses/grants/{id}/ works for Grantee
+        grant2 = CourseAccessGrant.objects.create(
+            course=self.dept1_course,
+            granted_to_level="department",
+            granted_to_department=self.dept2,
+            direction="offered",
+            status="approved",
+            initiated_by=self.dept1_admin,
+        )
+        self.client.force_authenticate(user=self.dept2_user)
+        del_url2 = reverse("course-access-grant-detail", kwargs={"pk": grant2.id})
+        del_res = self.client.delete(del_url2)
+        self.assertEqual(del_res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(CourseAccessGrant.objects.filter(id=grant2.id).exists())

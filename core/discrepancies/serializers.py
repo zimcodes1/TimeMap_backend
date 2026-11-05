@@ -81,7 +81,7 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
 
     def get_initiated_by_scope(self, obj):
         if not obj.initiated_by:
-            return "CYB"
+            return ""
         user = obj.initiated_by
         if hasattr(user, "admin_profile") and user.admin_profile:
             prof = user.admin_profile
@@ -91,12 +91,12 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
                 return prof.scope_faculty.code
             if prof.scope_school:
                 return prof.scope_school.code
-            return prof.level.upper()
+            return prof.level.upper() if prof.level else ""
         if hasattr(user, "lecturer_profile") and user.lecturer_profile and user.lecturer_profile.department:
             return user.lecturer_profile.department.code
         if hasattr(user, "student_profile") and user.student_profile and user.student_profile.department:
             return user.student_profile.department.code
-        return "CYB"
+        return ""
 
     def get_course_code(self, obj):
         if obj.timetable_entry and obj.timetable_entry.course:
@@ -106,7 +106,14 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
         if obj.timetable_entry and obj.timetable_entry.title:
             parts = obj.timetable_entry.title.split("—")
             return parts[0].strip()
-        return "CYB-212"
+        # Fallback: extract title/course from reason if present (e.g. Booking request for 'COS201 Lecture' ...)
+        if obj.reason and "Booking request for '" in obj.reason:
+            try:
+                title = obj.reason.split("Booking request for '")[1].split("'")[0]
+                return title.split()[0] if title else ""
+            except Exception:
+                pass
+        return ""
 
     def get_course_title(self, obj):
         if obj.timetable_entry and obj.timetable_entry.course:
@@ -116,7 +123,14 @@ class DiscrepancyRequestSerializer(serializers.ModelSerializer):
         if obj.timetable_entry and obj.timetable_entry.title:
             parts = obj.timetable_entry.title.split("—")
             return parts[1].strip() if len(parts) > 1 else parts[0].strip()
-        return "Cybersecurity & Cryptography"
+        # Fallback: extract title from reason if present
+        if obj.reason and "Booking request for '" in obj.reason:
+            try:
+                title = obj.reason.split("Booking request for '")[1].split("'")[0]
+                return title
+            except Exception:
+                pass
+        return ""
 
     def get_lecture_session_info(self, obj):
         if obj.lecture_session:

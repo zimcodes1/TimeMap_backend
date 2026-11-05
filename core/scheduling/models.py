@@ -1,8 +1,9 @@
-from accounts.models import AdminOfficer, LecturerStaff
+import uuid
+from accounts.models import AdminOfficer, LecturerStaff, User
 from courses.models import Course
 from django.core.exceptions import ValidationError
 from django.db import models
-from hierarchy.models import School
+from hierarchy.models import Faculty, School
 from venues.models import Venue
 
 
@@ -17,6 +18,9 @@ class AcademicSession(models.Model):
     label = models.CharField(max_length=20)  # e.g., "2026/2027"
     start_date = models.DateField()
     end_date = models.DateField()
+    max_semesters = models.PositiveSmallIntegerField(
+        default=2, help_text="Configured number of semesters for this session."
+    )
     is_current = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -35,9 +39,30 @@ class AcademicSession(models.Model):
         super().clean()
         if self.start_date and self.end_date and self.start_date >= self.end_date:
             raise ValidationError("Session start date must be before end date.")
+        if self.max_semesters is not None and (self.max_semesters < 1 or self.max_semesters > 6):
+            raise ValidationError("Max semesters per session must be between 1 and 6.")
+        if self.is_current and self.is_past:
+            raise ValidationError("A past academic session cannot be marked as current.")
+
+    @property
+    def is_past(self):
+        from django.utils import timezone
+        today = timezone.localdate()
+        if self.end_date and self.end_date < today:
+            return True
+        if self.pk:
+            sem_ends = list(self.semesters.values_list("end_date", flat=True))
+            if sem_ends:
+                max_sem_end = max(sem_ends)
+                max_allowed = self.max_semesters or 2
+                if max_sem_end < today and (len(sem_ends) >= max_allowed or self.end_date < today):
+                    return True
+        return False
 
     def save(self, *args, **kwargs):
         self.full_clean()
+        if self.is_current and self.school_id:
+            AcademicSession.objects.filter(school_id=self.school_id, is_current=True).exclude(pk=self.pk).update(is_current=False)
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -53,6 +78,8 @@ class Semester(models.Model):
     class SemesterName(models.TextChoices):
         FIRST = "first", "First Semester"
         SECOND = "second", "Second Semester"
+        THIRD = "third", "Third Semester"
+        FOURTH = "fourth", "Fourth Semester"
 
     class DurationType(models.TextChoices):
         WEEKS = "weeks", "Weeks"
@@ -85,17 +112,59 @@ class Semester(models.Model):
         unique_together = ("session", "name")
         ordering = ["session", "name"]
 
+    @property
+    def is_past(self):
+        from django.utils import timezone
+        today = timezone.localdate()
+        if self.end_date and self.end_date < today:
+            return True
+        if self.session_id and self.session.is_past:
+            return True
+        return False
+
+    @property
+    def can_activate(self):
+        return not self.is_past
+
     def clean(self):
         super().clean()
         if self.start_date and self.end_date and self.start_date >= self.end_date:
             raise ValidationError("Semester start date must be before end date.")
-        if self.lecture_start_date and self.lecture_end_date and self.lecture_start_date >= self.lecture_end_date:
-            raise ValidationError("Lecture period start must be before end.")
-        if self.exam_start_date and self.exam_end_date and self.exam_start_date >= self.exam_end_date:
-            raise ValidationError("Exam period start must be before end.")
+        if self.is_active and self.is_past:
+            raise ValidationError("A past semester cannot be set as active.")
+        if self.session_id:
+            max_allowed = getattr(self.session, "max_semesters", 2) or 2
+            ordinal_map = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+            ordinal = ordinal_map.get(self.name)
+            if ordinal and ordinal > max_allowed:
+                raise ValidationError(
+                    f"'{self.get_name_display()}' exceeds the maximum allowed semesters ({max_allowed}) for this session."
+                )
+        if not self.lecture_start_date or not self.lecture_end_date:
+            raise ValidationError("Lecture start and end dates are required.")
+        if self.lecture_start_date and self.lecture_end_date:
+            if self.lecture_start_date >= self.lecture_end_date:
+                raise ValidationError("Lecture period start must be before end.")
+            if self.start_date and self.lecture_start_date < self.start_date:
+                raise ValidationError("Lecture period start cannot be before semester start date.")
+            if self.end_date and self.lecture_end_date > self.end_date:
+                raise ValidationError("Lecture period end cannot be after semester end date.")
+        if self.exam_start_date and self.exam_end_date:
+            if self.exam_start_date >= self.exam_end_date:
+                raise ValidationError("Exam period start must be before end.")
+            if self.start_date and self.exam_start_date < self.start_date:
+                raise ValidationError("Exam period start cannot be before semester start date.")
+            if self.end_date and self.exam_end_date > self.end_date:
+                raise ValidationError("Exam period end cannot be after semester end date.")
 
     def save(self, *args, **kwargs):
         self.full_clean()
+        if self.is_active and self.session_id:
+            # Enforce mutual exclusivity across the entire school:
+            Semester.objects.filter(
+                session__school_id=self.session.school_id,
+                is_active=True,
+            ).exclude(pk=self.pk).update(is_active=False)
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -113,6 +182,7 @@ class TimetableEntry(models.Model):
         SHIFTED = "shifted", "Shifted"
         POSTPONED = "postponed", "Postponed"
         CANCELLED = "cancelled", "Cancelled"
+        PENDING_APPROVAL = "pending_approval", "Pending Approval"
 
     entry_type = models.CharField(max_length=20, choices=EntryType.choices)
     title = models.CharField(max_length=255)
@@ -128,6 +198,19 @@ class TimetableEntry(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SCHEDULED)
     created_by = models.ForeignKey(AdminOfficer, on_delete=models.CASCADE, related_name="created_timetable_entries")
     semester = models.ForeignKey(Semester, null=True, blank=True, on_delete=models.SET_NULL, related_name="timetable_entries")
+    target_program = models.ForeignKey(
+        "hierarchy.Program",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="targeted_timetable_entries",
+        help_text="Optional target program cohort for department/faculty/school events.",
+    )
+    target_level = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Optional target level for events (e.g. 100, 200, 300, 400, 500). Null means general / all levels.",
+    )
     academic_session = models.CharField(max_length=20, blank=True, default="")  # Deprecated — kept for data migration
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -162,3 +245,170 @@ class ExamSitting(models.Model):
 
     def __str__(self):
         return f"ExamSitting for {self.timetable_entry.title} ({self.registered_candidates_count} candidates)"
+
+
+class ExamOptimizerRun(models.Model):
+    """Published snapshot from the exam specific calendar and venue optimizer."""
+    class ScopeType(models.TextChoices):
+        SCHOOL = "school", "School"
+        FACULTY = "faculty", "Faculty"
+        DEPARTMENT = "department", "Department"
+
+    semester = models.ForeignKey(Semester, on_delete=models.CASCADE, related_name="exam_optimizer_runs")
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        APPROVED = "approved", "Approved"
+        PUBLISHED = "published", "Published"
+
+    scope_type = models.CharField(max_length=20, choices=ScopeType.choices)
+    scope_id = models.PositiveIntegerField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    events = models.JSONField(default=list, blank=True)
+    diagnostics = models.JSONField(default=dict, blank=True)
+    metrics = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name="exam_optimizer_runs")
+    approved_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="approved_exam_optimizer_runs")
+    published_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="published_exam_optimizer_runs")
+    approved_at = models.DateTimeField(null=True, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class GenerationScopePermission(models.Model):
+    """
+    Controls decentralized timetable generation and exam scheduling rights within a School.
+    School administrators configure whether Faculty or Department
+    admins are permitted to run scoped GA timetable generation or define faculty exam periods.
+    """
+
+    school = models.OneToOneField(
+        School, on_delete=models.CASCADE, related_name="generation_permission"
+    )
+    allow_faculty_generation = models.BooleanField(default=False)
+    allow_department_generation = models.BooleanField(default=False)
+    allow_faculty_exam_period = models.BooleanField(default=False)
+    allow_faculty_exam_generation = models.BooleanField(default=False)
+    allow_department_exam_generation = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"GenerationPermission({self.school.code}: fac={self.allow_faculty_generation}, dept={self.allow_department_generation}, exam_period={self.allow_faculty_exam_period}, fac_exam_gen={self.allow_faculty_exam_generation}, dept_exam_gen={self.allow_department_exam_generation})"
+
+
+class FacultyExamPeriod(models.Model):
+    """
+    Defines a faculty-specific examination period within a semester.
+    Allowed only when the School Admin enables 'allow_faculty_exam_period' in GenerationScopePermission.
+    """
+
+    semester = models.ForeignKey(
+        Semester, on_delete=models.CASCADE, related_name="faculty_exam_periods"
+    )
+    faculty = models.ForeignKey(
+        Faculty, on_delete=models.CASCADE, related_name="exam_periods"
+    )
+    start_date = models.DateField()
+    end_date = models.DateField()
+    created_by = models.ForeignKey(
+        AdminOfficer,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_faculty_exam_periods",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("semester", "faculty")
+        ordering = ["semester", "faculty"]
+
+    def clean(self):
+        super().clean()
+        if self.start_date and self.end_date and self.start_date >= self.end_date:
+            raise ValidationError("Faculty exam period start date must be before end date.")
+        if self.semester and self.semester.start_date and self.start_date < self.semester.start_date:
+            raise ValidationError("Faculty exam period start date cannot be before semester start date.")
+        if self.semester and self.semester.end_date and self.end_date > self.semester.end_date:
+            raise ValidationError("Faculty exam period end date cannot be after semester end date.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"ExamPeriod({self.faculty.code} - {self.semester}: {self.start_date} to {self.end_date})"
+
+
+class TimetableGenerationRun(models.Model):
+    """
+    Tracks an automated timetable generation run produced by the Genetic Algorithm.
+    Stores complete evaluation statistics, conflict diagnostics, and generated assignments.
+    """
+
+    class ScopeType(models.TextChoices):
+        SCHOOL = "school", "School"
+        FACULTY = "faculty", "Faculty"
+        DEPARTMENT = "department", "Department"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    class ResultStatus(models.TextChoices):
+        OPTIMAL = "optimal", "Optimal"
+        FEASIBLE = "feasible", "Feasible"
+        BEST_AVAILABLE = "best_available", "Best Available"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    semester = models.ForeignKey(
+        Semester, on_delete=models.CASCADE, related_name="generation_runs"
+    )
+    scope_type = models.CharField(max_length=20, choices=ScopeType.choices)
+    scope_id = models.PositiveIntegerField()
+    scope_name = models.CharField(max_length=255, blank=True, default="")
+
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING
+    )
+    result_status = models.CharField(
+        max_length=20, choices=ResultStatus.choices, default=ResultStatus.BEST_AVAILABLE
+    )
+
+    # Detailed constraint counters
+    hard_conflicts_count = models.PositiveIntegerField(default=0)
+    student_conflicts_count = models.PositiveIntegerField(default=0)
+    lecturer_conflicts_count = models.PositiveIntegerField(default=0)
+    venue_conflicts_count = models.PositiveIntegerField(default=0)
+    daily_limit_violations_count = models.PositiveIntegerField(default=0)
+    occurrence_day_violations_count = models.PositiveIntegerField(default=0)
+    capacity_penalty = models.PositiveIntegerField(default=0)
+    fitness_score = models.FloatField(default=0.0)
+
+    # Diagnostics & assignments payload
+    conflict_report = models.JSONField(default=dict, blank=True)
+    generation_metrics = models.JSONField(default=dict, blank=True)
+    assignments_payload = models.JSONField(default=list, blank=True)
+
+    is_published = models.BooleanField(default=False)
+    initiated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="timetable_generation_runs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"GenerationRun #{self.id} [{self.scope_type}:{self.scope_name}] ({self.status} - {self.result_status})"

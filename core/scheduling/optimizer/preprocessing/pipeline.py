@@ -1,0 +1,539 @@
+from typing import Any, Dict, List, Set, Tuple
+from django.db.models import Q
+
+from ..models.course import CourseData
+from ..models.lecturer import LecturerData
+from ..models.problem import SchedulingProblem
+from ..models.student_group import StudentGroup
+from ..models.venue import VenueData
+from .conflicts import build_student_conflict_graph
+from .occurrences import expand_occurrences
+from .slots import PERIODS, build_valid_slots
+from .venues import build_allowed_venues_map
+
+
+
+def _slot_id(day_code: str, start_time_str: str) -> str | None:
+    """
+    Reconstructs a Slot.slot_id (e.g. "MO_08:00-10:00") from a TimetableEntry's
+    day code and start_time string.  Returns None if the period is unrecognised.
+    """
+    for idx, start, end in PERIODS:
+        if start_time_str.startswith(start[:5]):
+            return f"{day_code}_{start}-{end}"
+    return None
+
+
+def build_external_commitments_from_db(
+    semester_id: int | str,
+    scope_type: str,
+    scope_id: int | str,
+) -> Tuple[
+    Dict[int | str, Set[str]],
+    Dict[int | str, Set[str]],
+    Dict[Tuple[int, int], Set[str]],
+    List[Dict[str, Any]],
+]:
+    """
+    Queries published TimetableGenerationRun instances (and active TimetableEntry rows)
+    outside the generating scope for the same semester, and constructs:
+      1. blocked_venue_slots: venue_id -> set of slot_ids ("MO_08:00-10:00")
+      2. blocked_lecturer_slots: lecturer_id -> set of slot_ids
+      3. blocked_cohort_slots: (program_id, level) -> set of slot_ids
+      4. commitment_details: list of diagnostic dictionaries
+
+    Scope Awareness Hierarchy & Peering:
+      - department: blocked by published runs of ancestor faculty & school,
+                    AND sibling departments (peer scopes sharing venues/staff/cohorts),
+                    AND peer faculties.
+      - faculty:    blocked by published school-level runs,
+                    AND sibling faculties,
+                    AND departments outside this faculty.
+      - school:     master institutional scope (clean slate).
+    """
+    from hierarchy.models import Department
+    from scheduling.models import TimetableEntry, TimetableGenerationRun
+
+    blocked_venues: Dict[int | str, Set[str]] = {}
+    blocked_lecturers: Dict[int | str, Set[str]] = {}
+    blocked_cohorts: Dict[Tuple[int, int], Set[str]] = {}
+    details: List[Dict[str, Any]] = []
+
+    # School-level generation: clean slate master institutional schedule
+    if scope_type == "school":
+        return blocked_venues, blocked_lecturers, blocked_cohorts, details
+
+    # Determine external published generation runs
+    runs_qs = TimetableGenerationRun.objects.filter(
+        semester_id=semester_id,
+        is_published=True,
+    )
+
+    if scope_type == "department":
+        # Any published run that is NOT this department's own run
+        runs_qs = runs_qs.exclude(scope_type="department", scope_id=int(scope_id))
+    elif scope_type == "faculty":
+        # Exclude this faculty's own run AND child department runs under this faculty
+        dept_ids = list(Department.objects.filter(faculty_id=scope_id).values_list("id", flat=True))
+        runs_qs = runs_qs.exclude(
+            Q(scope_type="faculty", scope_id=int(scope_id))
+            | Q(scope_type="department", scope_id__in=dept_ids)
+        )
+
+    # 1. Ingest assignments_payload from external published generation runs
+    for run in runs_qs:
+        for item in (run.assignments_payload or []):
+            venue_id = item.get("venue_id")
+            day_code = item.get("day")
+            start_time = item.get("start_time", "")
+
+            if not day_code or not start_time:
+                continue
+
+            sid = _slot_id(day_code, str(start_time))
+            if sid is None:
+                continue
+
+            # Block venue
+            if venue_id:
+                blocked_venues.setdefault(venue_id, set()).add(sid)
+
+            # Block lecturers
+            lecturer_ids = item.get("lecturer_ids", [])
+            for lid in lecturer_ids:
+                blocked_lecturers.setdefault(lid, set()).add(sid)
+
+            # Block cohorts
+            programs = item.get("programs", [])
+            for prog in programs:
+                pid = prog.get("id")
+                lvl = prog.get("level") or item.get("level")
+                if pid and lvl:
+                    blocked_cohorts.setdefault((int(pid), int(lvl)), set()).add(sid)
+
+            details.append({
+                "source": "published_run",
+                "scope_type": run.scope_type,
+                "scope_id": run.scope_id,
+                "scope_name": run.scope_name,
+                "course_code": item.get("course_code"),
+                "slot_id": sid,
+                "venue_id": venue_id,
+                "venue_name": item.get("venue_name"),
+                "lecturer_ids": lecturer_ids,
+                "programs": programs,
+            })
+
+    # 2. Ingest manual TimetableEntry rows outside the generating scope
+    entry_qs = TimetableEntry.objects.filter(
+        semester_id=semester_id,
+        entry_type=TimetableEntry.EntryType.LECTURE,
+    ).select_related("course", "venue").prefetch_related("course__lecturers")
+
+    if scope_type == "department":
+        entry_qs = entry_qs.exclude(course__owning_department_id=int(scope_id))
+    elif scope_type == "faculty":
+        dept_ids = list(Department.objects.filter(faculty_id=scope_id).values_list("id", flat=True))
+        entry_qs = entry_qs.exclude(
+            Q(course__owning_faculty_id=int(scope_id))
+            | Q(course__owning_department_id__in=dept_ids)
+        )
+
+    weekday_name_to_code = {
+        "monday": "MO", "tuesday": "TU", "wednesday": "WE",
+        "thursday": "TH", "friday": "FR",
+    }
+
+    for entry in entry_qs:
+        day_code = None
+        if entry.recurrence_rule:
+            parts = entry.recurrence_rule.lower().split(":")
+            if len(parts) > 1 and parts[-1] in weekday_name_to_code:
+                day_code = weekday_name_to_code[parts[-1]]
+        if not day_code:
+            continue
+
+        sid = _slot_id(day_code, str(entry.start_time))
+        if not sid:
+            continue
+
+        if entry.venue_id:
+            blocked_venues.setdefault(entry.venue_id, set()).add(sid)
+
+        if entry.course:
+            for lec in entry.course.lecturers.all():
+                blocked_lecturers.setdefault(lec.id, set()).add(sid)
+
+            if entry.course.target_program_id and entry.course.level:
+                blocked_cohorts.setdefault(
+                    (entry.course.target_program_id, entry.course.level), set()
+                ).add(sid)
+
+    return blocked_venues, blocked_lecturers, blocked_cohorts, details
+
+
+def build_blocked_venue_slots_from_db(
+    semester_id: int | str,
+    scope_type: str,
+    scope_id: int | str,
+) -> Dict[int | str, Set[str]]:
+    """
+    Backward-compatible wrapper returning only the blocked_venues map.
+    """
+    venues, _, _, _ = build_external_commitments_from_db(
+        semester_id=semester_id,
+        scope_type=scope_type,
+        scope_id=scope_id,
+    )
+    return venues
+
+
+def build_scheduling_problem_from_db(
+    semester_id: int | str,
+    scope_type: str,
+    scope_id: int | str,
+) -> SchedulingProblem:
+    """
+    Database adapter: queries Django models for the specified scope and active semester,
+    resolves courses, student cohorts, lecturer allocations, and allowed venues,
+    and returns a pure-data SchedulingProblem ready for GA optimization.
+
+    When a higher-scope published timetable exists for the same semester, this
+    function also builds a blocked_venue_slots map so the GA avoids assigning
+    courses to slots already occupied by those published entries.
+    """
+    from courses.models import Course, CourseAccessGrant
+    from hierarchy.models import Department, Faculty, Program, School
+    from scheduling.models import Semester
+    from student_counts.models import ProgramStudentCount
+    from venues.models import Venue
+
+    semester = Semester.objects.select_related("session__school").get(id=semester_id)
+    school = semester.session.school
+
+    # 1. Resolve scope label
+    scope_name = ""
+    if scope_type == "school":
+        sch = School.objects.filter(id=scope_id).first() or school
+        scope_name = sch.name
+    elif scope_type == "faculty":
+        fac = Faculty.objects.filter(id=scope_id).first()
+        scope_name = fac.name if fac else f"Faculty #{scope_id}"
+    elif scope_type == "department":
+        dept = Department.objects.filter(id=scope_id).first()
+        scope_name = dept.name if dept else f"Department #{scope_id}"
+
+    course_filter = Q()
+    if scope_type == "school":
+        course_filter = (
+            Q(owning_school_id=scope_id)
+            | Q(owning_faculty__school_id=scope_id)
+            | Q(owning_department__faculty__school_id=scope_id)
+            | (Q(owning_level="general") & (Q(owning_school_id=scope_id) | Q(owning_school__isnull=True)))
+        )
+    elif scope_type == "faculty":
+        fac = Faculty.objects.filter(id=scope_id).first()
+        school_id = fac.school_id if fac else None
+        course_filter = (
+            Q(owning_faculty_id=scope_id)
+            | Q(owning_department__faculty_id=scope_id)
+        )
+        if school_id:
+            course_filter |= (
+                Q(owning_level=Course.OwningLevel.GENERAL, owning_school_id=school_id)
+                | Q(owning_level=Course.OwningLevel.FACULTY, owning_faculty_id=scope_id)
+            )
+    elif scope_type == "department":
+        course_filter = Q(owning_department_id=scope_id)
+        shared_course_ids = CourseAccessGrant.objects.filter(
+            status="approved",
+            granted_to_department_id=scope_id,
+        ).values_list("course_id", flat=True)
+        if shared_course_ids.exists():
+            course_filter |= Q(id__in=list(shared_course_ids))
+
+    # Filter courses attached to this semester or without semester set
+    courses_qs = (
+        Course.objects.filter(course_filter)
+        .filter(Q(semester=semester) | Q(semester__isnull=True))
+        .select_related("owning_department", "owning_faculty", "owning_school", "target_program")
+        .prefetch_related("lecturers", "access_grants")
+        .distinct()
+    )
+
+    # 3. Query all programs in scope for student group resolution
+    programs_map: Dict[int, Program] = {
+        p.id: p for p in Program.objects.select_related("department").all()
+    }
+    depts_programs: Dict[int, List[Program]] = {}
+    for p in programs_map.values():
+        depts_programs.setdefault(p.department_id, []).append(p)
+
+    # 4. Load student counts for headcounts
+    student_counts_map: Dict[Tuple[int, int], int] = {
+        (sc.program_id, sc.level): sc.count
+        for sc in ProgramStudentCount.objects.all()
+    }
+
+    # 5. Build CourseData and collect lecturers
+    courses_data: List[CourseData] = []
+    lecturer_details: Dict[int | str, LecturerData] = {}
+    lecturers_by_course: Dict[int | str, Set[int | str]] = {}
+
+    for c in courses_qs:
+        # Determine student groups taking this course
+        groups: Set[StudentGroup] = set()
+
+        if c.program_scope == "program" and c.target_program:
+            tp = c.target_program
+            groups.add(StudentGroup(tp.id, c.level, tp.code, tp.name))
+        else:
+            # General: all programs under owning department (or owning faculty/school)
+            dept_ids = []
+            if c.owning_department_id:
+                dept_ids = [c.owning_department_id]
+            elif c.owning_faculty_id:
+                dept_ids = list(
+                    Department.objects.filter(faculty_id=c.owning_faculty_id).values_list("id", flat=True)
+                )
+            elif c.owning_school_id:
+                dept_ids = list(
+                    Department.objects.filter(faculty__school_id=c.owning_school_id).values_list("id", flat=True)
+                )
+
+            for dept_id in dept_ids:
+                for prog in depts_programs.get(dept_id, []):
+                    groups.add(StudentGroup(prog.id, c.level, prog.code, prog.name))
+
+        # Check approved access grants
+        receiving_dept_ids: Set[int | str] = set()
+        for grant in c.access_grants.filter(status="approved"):
+            if grant.target_program:
+                gp = grant.target_program
+                groups.add(StudentGroup(gp.id, c.level, gp.code, gp.name))
+                if gp.department_id:
+                    receiving_dept_ids.add(gp.department_id)
+            elif grant.granted_to_department_id:
+                receiving_dept_ids.add(grant.granted_to_department_id)
+                for prog in depts_programs.get(grant.granted_to_department_id, []):
+                    groups.add(StudentGroup(prog.id, c.level, prog.code, prog.name))
+
+        # Check any student groups belonging to other departments (cohort sharing)
+        for g in groups:
+            prog_obj = programs_map.get(g.program_id)
+            if prog_obj and prog_obj.department_id and c.owning_department_id and prog_obj.department_id != c.owning_department_id:
+                receiving_dept_ids.add(prog_obj.department_id)
+
+        # Fallback if no specific program is registered
+        if not groups:
+            dummy_id = c.owning_department_id or 0
+            groups.add(StudentGroup(dummy_id, c.level, "GEN", "General"))
+
+        # Calculate expected headcount from ProgramStudentCounts
+        total_students = sum(
+            student_counts_map.get((g.program_id, g.level), 0) for g in groups
+        )
+        if total_students == 0:
+            total_students = 50  # reasonable fallback default
+
+        # Lecturers
+        lecturer_ids_set: Set[int | str] = set()
+        for lecturer in c.lecturers.all():
+            lecturer_ids_set.add(lecturer.id)
+            if lecturer.id not in lecturer_details:
+                lecturer_details[lecturer.id] = LecturerData(
+                    id=lecturer.id,
+                    name=lecturer.full_name,
+                    staff_id=lecturer.staff_id,
+                )
+        lecturers_by_course[c.id] = lecturer_ids_set
+
+        course_fac_id = c.owning_faculty_id or (c.owning_department.faculty_id if c.owning_department else None)
+        course_sch_id = c.owning_school_id or (
+            c.owning_faculty.school_id if c.owning_faculty else (
+                c.owning_department.faculty.school_id if c.owning_department and c.owning_department.faculty else None
+            )
+        )
+
+        is_general = (
+            c.owning_level == Course.OwningLevel.GENERAL
+            or (scope_type == "faculty" and c.owning_level == Course.OwningLevel.FACULTY and c.program_scope == Course.ProgramScope.GENERAL)
+            or (scope_type == "school" and c.owning_level in (Course.OwningLevel.SCHOOL, Course.OwningLevel.GENERAL))
+        )
+
+        courses_data.append(
+            CourseData(
+                id=c.id,
+                code=c.code,
+                title=c.title,
+                level=c.level,
+                department_id=c.owning_department_id or "",
+                department_name=c.owning_department.name if c.owning_department else "",
+                required_occurrences=c.required_occurrences_per_week or 1,
+                course_type=c.course_type or "lecture",
+                student_groups=tuple(groups),
+                lecturer_ids=tuple(lecturer_ids_set),
+                expected_students=total_students,
+                owning_level=c.owning_level or "department",
+                faculty_id=course_fac_id,
+                school_id=course_sch_id,
+                receiving_department_ids=tuple(receiving_dept_ids),
+                is_general=is_general,
+            )
+        )
+
+    # Collect all receiving departments from courses in scope so their venues can be loaded if needed
+    all_receiving_dept_ids: Set[int | str] = set()
+    for cd in courses_data:
+        all_receiving_dept_ids.update(cd.receiving_department_ids)
+
+    # 6. Load venues in scope according to the access model:
+    # V(S, D) = V_dept(D) U V_faculty(F(D)) U V_school (plus V_dept(D_recv) for shared courses)
+    # V(S, F) = U_{D in F} V_dept(D) U V_faculty(F) U V_school
+    # V(S, School) = V_school U U_F V_faculty(F) U U_D V_dept(D)
+    venue_filter = Q(is_active=True)
+    if scope_type == "school":
+        venue_filter &= (
+            Q(owning_level="school", owning_school_id=scope_id)
+            | Q(owning_level="faculty", owning_faculty__school_id=scope_id)
+            | Q(owning_level="department", owning_department__faculty__school_id=scope_id)
+        )
+    elif scope_type == "faculty":
+        fac = Faculty.objects.filter(id=scope_id).first()
+        school_id = fac.school_id if fac else None
+
+        dept_venues_q = Q(owning_level="department", owning_department__faculty_id=scope_id)
+        if all_receiving_dept_ids:
+            dept_venues_q |= Q(owning_level="department", owning_department_id__in=all_receiving_dept_ids)
+
+        faculty_venues_q = Q(owning_level="faculty", owning_faculty_id=scope_id, owning_department__isnull=True)
+        school_venues_q = Q(owning_level="school", owning_department__isnull=True)
+        if school_id:
+            school_venues_q &= (Q(owning_school_id=school_id) | Q(owning_school__isnull=True))
+
+        venue_filter &= (dept_venues_q | faculty_venues_q | school_venues_q)
+
+    elif scope_type == "department":
+        dept = Department.objects.filter(id=scope_id).select_related("faculty__school").first()
+        faculty_id = dept.faculty_id if dept else None
+        school_id = dept.faculty.school_id if dept and dept.faculty else None
+
+        allowed_depts = {scope_id}
+        allowed_depts.update(all_receiving_dept_ids)
+
+        dept_venues_q = Q(owning_level="department", owning_department_id__in=allowed_depts)
+        faculty_venues_q = (
+            Q(owning_level="faculty", owning_faculty_id=faculty_id, owning_department__isnull=True)
+            if faculty_id
+            else Q(pk__in=[])
+        )
+        school_venues_q = Q(owning_level="school", owning_department__isnull=True)
+        if school_id:
+            school_venues_q &= (Q(owning_school_id=school_id) | Q(owning_school__isnull=True))
+
+        venue_filter &= (dept_venues_q | faculty_venues_q | school_venues_q)
+
+    venues_qs = (
+        Venue.objects.filter(venue_filter)
+        .select_related("owning_department__faculty", "owning_faculty", "owning_school")
+        .distinct()
+    )
+
+    # Fallback to all active school venues if scope-specific venues are empty
+    if not venues_qs.exists() and school:
+        venues_qs = (
+            Venue.objects.filter(
+                Q(owning_school=school)
+                | Q(owning_faculty__school_id=school.id)
+                | Q(owning_department__faculty__school_id=school.id)
+            )
+            .filter(is_active=True)
+            .select_related("owning_department__faculty", "owning_faculty", "owning_school")
+            .distinct()
+        )
+
+    venues_data: List[VenueData] = [
+        VenueData(
+            id=v.id,
+            name=v.name,
+            venue_type=v.venue_type,
+            capacity=v.capacity,
+            owning_level=v.owning_level or "school",
+            owning_department_id=v.owning_department_id,
+            owning_faculty_id=v.owning_faculty_id or (v.owning_department.faculty_id if v.owning_department else None),
+            owning_school_id=v.owning_school_id or (
+                v.owning_faculty.school_id if v.owning_faculty else (
+                    v.owning_department.faculty.school_id if v.owning_department and v.owning_department.faculty else None
+                )
+            ),
+            owning_scope_id=v.owning_department_id or v.owning_faculty_id or v.owning_school_id or "",
+        )
+        for v in venues_qs
+    ]
+
+    venues_dict = {v.id: v for v in venues_data}
+
+    # 7. Allowed venues resolution
+    allowed_venues_by_course = build_allowed_venues_map(courses_data, venues_data)
+
+    # Propagate allowed venues back to CourseData so CourseOccurrence inherits them
+    courses_data = [
+        CourseData(
+            id=c.id,
+            code=c.code,
+            title=c.title,
+            level=c.level,
+            department_id=c.department_id,
+            department_name=c.department_name,
+            required_occurrences=c.required_occurrences,
+            course_type=c.course_type,
+            student_groups=c.student_groups,
+            lecturer_ids=c.lecturer_ids,
+            allowed_venue_ids=tuple(allowed_venues_by_course.get(c.id, ())),
+            expected_students=c.expected_students,
+            owning_level=c.owning_level,
+            faculty_id=c.faculty_id,
+            school_id=c.school_id,
+            receiving_department_ids=c.receiving_department_ids,
+            is_general=c.is_general,
+        )
+        for c in courses_data
+    ]
+
+    # 8. Expand course occurrences
+    occurrences = expand_occurrences(courses_data)
+
+    # 9. Build valid 24 slots (Friday 12-2 Jummat excluded)
+    valid_slots = build_valid_slots()
+
+    # 10. Build student conflict graph
+    conflict_graph, shared_groups = build_student_conflict_graph(courses_data)
+
+    # 11. Build blocked venue, lecturer, and cohort commitments from published timetables
+    blocked_venues, blocked_lecturers, blocked_cohorts, external_details = (
+        build_external_commitments_from_db(
+            semester_id=semester_id,
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
+    )
+
+    return SchedulingProblem(
+        occurrences=occurrences,
+        valid_slots=valid_slots,
+        venues=venues_dict,
+        student_conflict_graph=conflict_graph,
+        shared_student_groups=shared_groups,
+        lecturers_by_course=lecturers_by_course,
+        lecturer_details=lecturer_details,
+        allowed_venues_by_course=allowed_venues_by_course,
+        blocked_venue_slots=blocked_venues,
+        blocked_lecturer_slots=blocked_lecturers,
+        blocked_cohort_slots=blocked_cohorts,
+        external_commitments_details=external_details,
+        daily_lecture_limit=3,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        scope_name=scope_name,
+        semester_id=semester.id,
+    )

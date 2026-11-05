@@ -15,7 +15,28 @@ from .services import (
     get_admin_analytics,
     get_class_rep_analytics,
     get_lecturer_analytics,
+    get_student_analytics,
 )
+
+
+class StudentAnalyticsView(APIView):
+    permission_classes = [IsAuthenticated, IsPasswordResetDone]
+
+    @extend_schema(
+        summary="Student Lecture Hold Analytics",
+        parameters=[AnalyticsQueryParamSerializer],
+        responses={200: ClassRepAnalyticsResponseSerializer},
+    )
+    def get(self, request):
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        data = get_student_analytics(
+            student_user=request.user,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class ClassRepAnalyticsView(APIView):
