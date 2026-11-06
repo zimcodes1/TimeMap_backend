@@ -60,6 +60,9 @@ class Course(models.Model):
         "hierarchy.Program", null=True, blank=True,
         on_delete=models.SET_NULL, related_name="targeted_courses",
     )
+    target_programs = models.ManyToManyField(
+        "hierarchy.Program", blank=True, related_name="targeted_courses_m2m",
+    )
 
     def save(self, *args, **kwargs):
         if self.code:

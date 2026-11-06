@@ -29,11 +29,11 @@ def get_visible_courses_for_student(student, semester=None):
 
     # 1. Program match condition for department-level courses
     program_filter = (
-        Q(target_program__isnull=True)
+        Q(target_program__isnull=True, target_programs__isnull=True)
         | Q(program_scope__in=["general", "all", ""])
     )
     if prog:
-        program_filter |= Q(target_program=prog)
+        program_filter |= Q(target_program=prog) | Q(target_programs=prog)
 
     # 2. Default ownership matches
     default_q = (
@@ -115,8 +115,12 @@ def get_course_attributed_programs(course, hierarchy_ctx=None):
     attributed_programs = set()
 
     # 1. Originating department / program scope
-    if course.program_scope == Course.ProgramScope.PROGRAM and course.target_program_id:
-        attributed_programs.add(course.target_program_id)
+    if course.program_scope == Course.ProgramScope.PROGRAM:
+        m2m_ids = list(course.target_programs.values_list("id", flat=True))
+        if m2m_ids:
+            attributed_programs.update(m2m_ids)
+        elif course.target_program_id:
+            attributed_programs.add(course.target_program_id)
     else:
         if course.owning_department_id:
             attributed_programs.update(depts_programs.get(course.owning_department_id, []))

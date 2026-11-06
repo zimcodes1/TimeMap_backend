@@ -128,6 +128,22 @@ def filter_allowed_venues(
         if not faculty_or_school_labs:
             faculty_or_school_labs = [v.id for v in all_venues if v.is_laboratory]
         allowed.extend(faculty_or_school_labs)
+
+        # Ultimate fallback: If still no labs exist anywhere in the hierarchy,
+        # fallback to department/faculty/school venues rather than leaving course unschedulable.
+        if not allowed:
+            dept_or_scope_venues = [
+                v.id
+                for v in all_venues
+                if (
+                    (owning_dept_id and str(v.owning_department_id) in allowed_dept_ids)
+                    or (v_fac_id and v_fac_id == course_fac_id)
+                    or (v.owning_level and v.owning_level.lower() in ("faculty", "school"))
+                )
+            ]
+            if not dept_or_scope_venues:
+                dept_or_scope_venues = [v.id for v in all_venues]
+            allowed.extend(dept_or_scope_venues)
     elif not is_practical and not allowed:
         fallback_halls = [
             v.id
@@ -141,6 +157,21 @@ def filter_allowed_venues(
         if not fallback_halls:
             fallback_halls = [v.id for v in all_venues if not v.is_laboratory]
         allowed.extend(fallback_halls)
+
+        # Ultimate fallback: If still no halls exist, allow department labs rather than 0 venues
+        if not allowed:
+            dept_or_scope_venues = [
+                v.id
+                for v in all_venues
+                if (
+                    (owning_dept_id and str(v.owning_department_id) in allowed_dept_ids)
+                    or (v_fac_id and v_fac_id == course_fac_id)
+                    or (v.owning_level and v.owning_level.lower() in ("faculty", "school"))
+                )
+            ]
+            if not dept_or_scope_venues:
+                dept_or_scope_venues = [v.id for v in all_venues]
+            allowed.extend(dept_or_scope_venues)
 
     return allowed
 

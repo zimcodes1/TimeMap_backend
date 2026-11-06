@@ -1,5 +1,5 @@
 from accounts.models import AdminOfficer, Student
-from hierarchy.models import Department, Faculty, School
+from hierarchy.models import Department, Faculty, School, Program
 from rest_framework import serializers
 
 from .models import Course, CourseAccessGrant, CourseRegistration
@@ -15,6 +15,9 @@ class CourseSerializer(serializers.ModelSerializer):
     session_label = serializers.ReadOnlyField(source="semester.session.label")
     target_program_name = serializers.ReadOnlyField(source="target_program.name")
     target_program_code = serializers.ReadOnlyField(source="target_program.code")
+    target_programs = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Program.objects.all(), required=False
+    )
     registration_count = serializers.SerializerMethodField()
     is_granted_to_scope = serializers.BooleanField(read_only=True, default=False)
     can_edit_exam_settings = serializers.BooleanField(read_only=True, default=False)
@@ -47,6 +50,7 @@ class CourseSerializer(serializers.ModelSerializer):
             "target_program",
             "target_program_name",
             "target_program_code",
+            "target_programs",
             "lecturers",
             "registration_count",
             "is_granted_to_scope",
@@ -194,6 +198,15 @@ class CourseSerializer(serializers.ModelSerializer):
         data["scope_grant_id"] = scope_grant_id
         data["active_grants"] = active_grants_data
         data["can_edit_exam_settings"] = can_edit_exam_settings
+
+        target_progs = list(instance.target_programs.all())
+        if not target_progs and instance.target_program:
+            target_progs = [instance.target_program]
+        data["target_programs"] = [p.id for p in target_progs]
+        data["target_program_names"] = [p.name for p in target_progs]
+        data["target_program_details"] = [
+            {"id": p.id, "name": p.name, "code": p.code} for p in target_progs
+        ]
         return data
 
     def validate_code(self, value):
@@ -338,13 +351,36 @@ class CourseSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"owning_school": "owning_school is required for school-owned course."})
 
         # Program scope validation
-        if program_scope == Course.ProgramScope.PROGRAM:
-            if not target_prog:
-                raise serializers.ValidationError({"target_program": "target_program is required when program_scope is 'program'."})
-            if owning_dept and target_prog.department_id != owning_dept.id:
-                raise serializers.ValidationError({"target_program": "target_program must belong to the course's owning department."})
-        elif program_scope == Course.ProgramScope.GENERAL:
-            attrs["target_program"] = None
+        target_programs = attrs.get("target_programs")
+        if target_programs is not None:
+            if program_scope == Course.ProgramScope.PROGRAM:
+                if not target_programs and not target_prog:
+                    raise serializers.ValidationError(
+                        {"target_programs": "At least one target program is required when program_scope is 'program'."}
+                    )
+                if owning_dept:
+                    for tp in target_programs:
+                        if tp.department_id != owning_dept.id:
+                            raise serializers.ValidationError(
+                                {"target_programs": f"Program '{tp.name}' must belong to the course's owning department."}
+                            )
+                if target_programs and not target_prog:
+                    attrs["target_program"] = target_programs[0]
+            elif program_scope == Course.ProgramScope.GENERAL:
+                attrs["target_program"] = None
+                attrs["target_programs"] = []
+        else:
+            if program_scope == Course.ProgramScope.PROGRAM:
+                if not target_prog:
+                    raise serializers.ValidationError(
+                        {"target_program": "target_program is required when program_scope is 'program'."}
+                    )
+                if owning_dept and target_prog.department_id != owning_dept.id:
+                    raise serializers.ValidationError(
+                        {"target_program": "target_program must belong to the course's owning department."}
+                    )
+            elif program_scope == Course.ProgramScope.GENERAL:
+                attrs["target_program"] = None
 
         # Creation-time ownership guardrails based on requesting admin's level
         if (user.role in ["admin", "system_admin"] or user.is_superuser) and hasattr(user, "admin_profile"):
@@ -371,6 +407,33 @@ class CourseSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({"owning_department": "Department admins can only create courses for their assigned department scope."})
 
         return attrs
+
+    def create(self, validated_data):
+        target_programs = validated_data.pop("target_programs", None)
+        instance = super().create(validated_data)
+        if target_programs is not None:
+            instance.target_programs.set(target_programs)
+            if target_programs and not instance.target_program:
+                instance.target_program = target_programs[0]
+                instance.save(update_fields=["target_program"])
+        elif instance.target_program:
+            instance.target_programs.set([instance.target_program])
+        return instance
+
+    def update(self, instance, validated_data):
+        target_programs = validated_data.pop("target_programs", None)
+        instance = super().update(instance, validated_data)
+        if target_programs is not None:
+            instance.target_programs.set(target_programs)
+            if target_programs and not instance.target_program:
+                instance.target_program = target_programs[0]
+                instance.save(update_fields=["target_program"])
+            elif not target_programs and instance.program_scope == Course.ProgramScope.GENERAL:
+                instance.target_program = None
+                instance.save(update_fields=["target_program"])
+        elif instance.target_program and not instance.target_programs.exists():
+            instance.target_programs.set([instance.target_program])
+        return instance
 
 
 class CourseAccessGrantSerializer(serializers.ModelSerializer):
