@@ -234,6 +234,30 @@ class CourseSerializer(serializers.ModelSerializer):
             elif user.is_superuser:
                 is_owned = True
 
+            if not self.instance and not user.is_superuser:
+                owning_lvl = attrs.get("owning_level")
+                if level == "department":
+                    dept = attrs.get("owning_department")
+                    dept_id = dept.id if hasattr(dept, "id") else dept
+                    if owning_lvl != Course.OwningLevel.DEPARTMENT or dept_id != admin_prof.scope_department_id:
+                        raise serializers.ValidationError(
+                            {"owning_department": "Department administrators can only create courses for their assigned department."}
+                        )
+                elif level == "faculty":
+                    fac = attrs.get("owning_faculty")
+                    fac_id = fac.id if hasattr(fac, "id") else fac
+                    if owning_lvl != Course.OwningLevel.FACULTY or fac_id != admin_prof.scope_faculty_id:
+                        raise serializers.ValidationError(
+                            {"owning_faculty": "Faculty administrators can only create courses for their assigned faculty."}
+                        )
+                elif level == "school":
+                    sch = attrs.get("owning_school")
+                    sch_id = sch.id if hasattr(sch, "id") else sch
+                    if owning_lvl != Course.OwningLevel.SCHOOL or sch_id != admin_prof.scope_school_id:
+                        raise serializers.ValidationError(
+                            {"owning_school": "School administrators can only create courses for their assigned school."}
+                        )
+
             EXAM_FIELDS = {"exam_type", "exam_duration_minutes", "exam_duration_per_student_minutes"}
             changed_fields = set()
             if self.instance:
@@ -246,14 +270,7 @@ class CourseSerializer(serializers.ModelSerializer):
             exam_fields_changed = bool(changed_fields & EXAM_FIELDS)
 
             if is_eo:
-                if not self.instance:
-                    raise serializers.ValidationError("Exam officers cannot create courses.")
-                disallowed = changed_fields - EXAM_FIELDS
-                if disallowed:
-                    raise serializers.ValidationError(
-                        f"Exam officers can only modify exam settings (exam_type, exam_duration_minutes, exam_duration_per_student_minutes). Cannot modify: {', '.join(sorted(disallowed))}."
-                    )
-                if not is_owned:
+                if self.instance and not is_owned:
                     raise serializers.ValidationError(
                         "Exam officers can only configure courses that are within and from their scope."
                     )

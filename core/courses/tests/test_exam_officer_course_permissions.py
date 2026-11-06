@@ -97,29 +97,44 @@ class ExamOfficerCoursePermissionsTests(APITestCase):
             level=AdminOfficer.Level.FACULTY, scope_faculty=self.faculty, is_exam_officer=True,
         )
 
-    def test_exam_officer_cannot_create_course(self):
+    def test_exam_officer_can_create_and_manage_scope_course(self):
+        """Admin officer designated as exam officer maintains admin powers to create/edit scoped courses."""
         self.client.force_authenticate(user=self.eo_user)
         res = self.client.post("/api/courses/courses/", {
             "code": "CSC102",
             "title": "Programming Principles",
             "level": 100,
+            "credit_units": 3,
             "owning_level": "department",
             "owning_department": self.dept1.id,
+            "semester_type": "first",
         })
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        new_course_id = res.data["id"]
 
-    def test_exam_officer_cannot_delete_course(self):
-        self.client.force_authenticate(user=self.eo_user)
-        res = self.client.delete(f"/api/courses/courses/{self.course_csc.id}/")
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
-
-    def test_exam_officer_cannot_edit_general_course_fields(self):
-        self.client.force_authenticate(user=self.eo_user)
-        res = self.client.patch(f"/api/courses/courses/{self.course_csc.id}/", {
-            "title": "Hacked Title",
+        # Can edit general fields on owned course
+        patch_res = self.client.patch(f"/api/courses/courses/{new_course_id}/", {
+            "title": "Updated Programming Principles",
         })
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("Exam officers can only modify exam settings", str(res.data))
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+
+        # Can delete owned course
+        del_res = self.client.delete(f"/api/courses/courses/{new_course_id}/")
+        self.assertEqual(del_res.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_exam_officer_cannot_create_course_outside_scope(self):
+        """Admin officer designated as exam officer cannot create courses outside their assigned scope."""
+        self.client.force_authenticate(user=self.eo_user)
+        res = self.client.post("/api/courses/courses/", {
+            "code": "MTH102",
+            "title": "Out of Scope Math",
+            "level": 100,
+            "credit_units": 3,
+            "owning_level": "department",
+            "owning_department": self.dept2.id,  # Other department!
+            "semester_type": "first",
+        })
+        self.assertIn(res.status_code, [status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN])
 
     def test_exam_officer_can_modify_exam_settings_on_owned_course(self):
         self.client.force_authenticate(user=self.eo_user)

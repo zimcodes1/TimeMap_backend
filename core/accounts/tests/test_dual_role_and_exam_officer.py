@@ -131,7 +131,7 @@ class DualRoleAndExamOfficerTests(APITestCase):
         self.assertIn("is_lecturer", res.data)
 
     def test_exam_officer_creation_and_restrictions(self):
-        """Exam officer can be created and is barred from lecture timetable generation & reports."""
+        """Exam officer maintains original admin capabilities plus exam permissions (the mix)."""
         self.client.force_authenticate(user=self.fac_user)
         url = reverse("admin-officer-list")
         payload = {
@@ -152,35 +152,59 @@ class DualRoleAndExamOfficerTests(APITestCase):
         exam_user.save()
         self.client.force_authenticate(user=exam_user)
 
-        # 1. Blocked from timetable generation
-        gen_url = reverse("timetable-generate-list")
-        gen_res = self.client.post(gen_url, {"semester": self.semester.id, "scope_type": "department", "scope_id": self.dept1.id}, format="json")
-        self.assertEqual(gen_res.status_code, status.HTTP_403_FORBIDDEN)
-
-        # 2. Blocked from lecture attendance reports
+        # 1. Maintained access to lecture attendance reports for scoped department
         rep_url = reverse("class-rep-report-list")
         rep_res = self.client.get(rep_url)
         self.assertEqual(rep_res.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(rep_res.data["results"] if isinstance(rep_res.data, dict) else rep_res.data), 0)
 
-        # 3. Blocked from lecture hold rate analytics
+        # 2. Maintained access to lecture hold rate analytics
         hold_url = reverse("reporting-analytics-lecture-hold-rate")
         hold_res = self.client.get(hold_url)
-        self.assertEqual(hold_res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(hold_res.status_code, status.HTTP_200_OK)
 
-        # 4. Allowed exam-specific analytics
+        # 3. Allowed exam-specific analytics
         exam_analytics_url = reverse("reporting-analytics-exam-analytics")
         exam_res = self.client.get(exam_analytics_url)
         self.assertEqual(exam_res.status_code, status.HTTP_200_OK)
         self.assertIn("summary", exam_res.data)
         self.assertIn("daily_breakdown", exam_res.data)
 
-        # 5. Role statcards return exam metrics
+        # 4. Role statcards return the mix (both dept admin metrics + exam metrics)
         statcards_url = reverse("reporting-analytics-dashboard-statcards")
         statcards_res = self.client.get(statcards_url)
         self.assertEqual(statcards_res.status_code, status.HTTP_200_OK)
         cards = statcards_res.data.get("cards", statcards_res.data) if isinstance(statcards_res.data, dict) else statcards_res.data
         card_ids = [c["id"] for c in cards]
+        # Base department admin cards
+        self.assertIn("active_venues", card_ids)
+        self.assertIn("total_courses", card_ids)
+        self.assertIn("discrepancy_queue", card_ids)
+        self.assertIn("unreported_sessions", card_ids)
+        # Exam officer cards
         self.assertIn("exam_sittings", card_ids)
         self.assertIn("exam_candidates", card_ids)
+
+    def test_triple_role_admin_officer(self):
+        """Admin officer can be designated as both lecturer and exam officer (admin-exam-officer-lecturer)."""
+        self.client.force_authenticate(user=self.fac_user)
+        url = reverse("admin-officer-list")
+        payload = {
+            "staff_id": "TRIPLE_ROLE_01",
+            "full_name": "Dr. Triple Role",
+            "email": "triple@example.com",
+            "level": "department",
+            "scope_department": self.dept1.id,
+            "is_lecturer": True,
+            "lecturer_department": self.dept1.id,
+            "is_exam_officer": True,
+        }
+        res = self.client.post(url, payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(res.data["is_lecturer"])
+        self.assertTrue(res.data["is_exam_officer"])
+
+        # Verify LecturerStaff created
+        admin_obj = AdminOfficer.objects.get(staff_id="TRIPLE_ROLE_01")
+        self.assertTrue(hasattr(admin_obj.user, "lecturer_profile"))
+        self.assertTrue(admin_obj.is_exam_officer)
 

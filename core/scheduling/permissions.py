@@ -18,8 +18,6 @@ class CanManageSessionAndSemester(BasePermission):
             return False
         if user.is_superuser or (user.is_staff and not hasattr(user, "admin_profile")):
             return True
-        if getattr(getattr(user, "admin_profile", None), "is_exam_officer", False):
-            return False
         return bool(
             user.role == "admin"
             and hasattr(user, "admin_profile")
@@ -42,8 +40,6 @@ class CanGenerateTimetable(BasePermission):
             return True
         if user.role != "admin" or not hasattr(user, "admin_profile"):
             return False
-        if getattr(user.admin_profile, "is_exam_officer", False):
-            return False
         return True
 
 
@@ -57,8 +53,6 @@ class CanManageGenerationPermissions(BasePermission):
     def has_permission(self, request, view):
         user = request.user
         if not user or not user.is_authenticated:
-            return False
-        if getattr(getattr(user, "admin_profile", None), "is_exam_officer", False):
             return False
         if request.method in permissions.SAFE_METHODS:
             return user.role == "admin"

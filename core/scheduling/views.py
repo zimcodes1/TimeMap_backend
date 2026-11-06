@@ -411,15 +411,6 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user.admin_profile)
 
     def create(self, request, *args, **kwargs):
-        admin_prof = getattr(request.user, "admin_profile", None)
-        if admin_prof and getattr(admin_prof, "is_exam_officer", False):
-            entry_type = request.data.get("entry_type")
-            if entry_type != TimetableEntry.EntryType.EXAM:
-                return Response(
-                    {"detail": "Exam Officers can only schedule exam entries."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -566,11 +557,6 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
             if course and course.lecturers.filter(id=lecturer_profile.id).exists():
                 is_authorized = True
         elif admin_profile:
-            if getattr(admin_profile, "is_exam_officer", False):
-                return Response(
-                    {"detail": "Exam Officers cannot modify lecture sessions."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
             from accounts.models import AdminOfficer
             if admin_profile.level == AdminOfficer.Level.SCHOOL:
                 is_authorized = True
@@ -700,11 +686,6 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
             if course and course.lecturers.filter(id=lecturer_profile.id).exists():
                 is_authorized = True
         elif admin_profile:
-            if getattr(admin_profile, "is_exam_officer", False):
-                return Response(
-                    {"detail": "Exam Officers cannot cancel lecture sessions."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
             from accounts.models import AdminOfficer
             if admin_profile.level == AdminOfficer.Level.SCHOOL:
                 is_authorized = True
@@ -785,11 +766,6 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
             if course and course.lecturers.filter(id=lecturer_profile.id).exists():
                 is_authorized = True
         elif admin_profile:
-            if getattr(admin_profile, "is_exam_officer", False):
-                return Response(
-                    {"detail": "Exam Officers cannot postpone lecture sessions."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
             from accounts.models import AdminOfficer
             if admin_profile.level == AdminOfficer.Level.SCHOOL:
                 is_authorized = True

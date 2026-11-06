@@ -50,8 +50,6 @@ class ClassRepReportViewSet(viewsets.ModelViewSet):
         elif user.role == "lecturer" and hasattr(user, "lecturer_profile"):
             qs = qs.filter(lecture_session__timetable_entry__course__lecturers=user.lecturer_profile)
         elif user.role == "admin" and hasattr(user, "admin_profile"):
-            if getattr(user.admin_profile, "is_exam_officer", False):
-                return ClassRepReport.objects.none()
             dept_qs = get_user_scope_departments(user)
             qs = qs.filter(lecture_session__timetable_entry__course__owning_department__in=dept_qs)
         else:
@@ -92,7 +90,7 @@ class UnreportedSessionFlagViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
 
     def get_queryset(self):
         user = self.request.user
-        if user.role != "admin" or not hasattr(user, "admin_profile") or getattr(user.admin_profile, "is_exam_officer", False):
+        if user.role != "admin" or not hasattr(user, "admin_profile"):
             return UnreportedSessionFlag.objects.none()
 
         dept_qs = get_user_scope_departments(user)
@@ -120,11 +118,6 @@ class AnalyticsViewSet(viewsets.ViewSet):
     @extend_schema(summary="Get lecture-hold rate analytics summary & breakdown", parameters=[AnalyticsQueryParamsSerializer], responses={200: dict})
     @action(detail=False, methods=["get"], url_path="lecture-hold-rate")
     def lecture_hold_rate(self, request):
-        if getattr(getattr(request.user, "admin_profile", None), "is_exam_officer", False):
-            return Response(
-                {"detail": "Exam Officers do not have access to lecture attendance analytics."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
         from .analytics import get_lecture_hold_rate_analytics
         dept_id = request.query_params.get("department_id")
         faculty_id = request.query_params.get("faculty_id")
@@ -187,11 +180,6 @@ class AnalyticsViewSet(viewsets.ViewSet):
     @extend_schema(summary="Get discrepancy frequency analytics summary", parameters=[AnalyticsQueryParamsSerializer], responses={200: dict})
     @action(detail=False, methods=["get"], url_path="discrepancy-frequency")
     def discrepancy_frequency(self, request):
-        if getattr(getattr(request.user, "admin_profile", None), "is_exam_officer", False):
-            return Response(
-                {"detail": "Exam Officers do not have access to venue discrepancy analytics."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
         from .analytics import get_discrepancy_frequency_analytics
         data = get_discrepancy_frequency_analytics(
             user=request.user,
