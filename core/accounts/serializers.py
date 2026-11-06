@@ -579,6 +579,9 @@ class StudentRegistrationSerializer(serializers.Serializer):
     matric_number = serializers.CharField(max_length=50, required=True)
     full_name = serializers.CharField(max_length=255, required=True)
     email = serializers.EmailField(required=True)
+    school = serializers.PrimaryKeyRelatedField(
+        queryset=School.objects.all(), required=False, allow_null=True
+    )
     faculty = serializers.PrimaryKeyRelatedField(
         queryset=Faculty.objects.all(), required=False, allow_null=True
     )
@@ -608,10 +611,14 @@ class StudentRegistrationSerializer(serializers.Serializer):
         return value.strip().lower()
 
     def validate(self, attrs):
+        school = attrs.get("school")
         faculty = attrs.get("faculty")
         department = attrs.get("department")
         program = attrs.get("program")
         level = attrs.get("level")
+
+        if school and faculty and faculty.school_id != school.id:
+            raise serializers.ValidationError({"faculty": "The selected faculty does not belong to the selected school/institute."})
 
         if faculty and department.faculty_id != faculty.id:
             raise serializers.ValidationError({"department": "The selected department does not belong to the selected faculty."})
@@ -630,6 +637,7 @@ class StudentRegistrationSerializer(serializers.Serializer):
     def create(self, validated_data):
         from django.db import transaction
 
+        validated_data.pop("school", None)
         validated_data.pop("faculty", None)
         password = validated_data.pop("password")
         matric_number = validated_data["matric_number"]

@@ -62,12 +62,13 @@ class RegistrationOptionsView(APIView):
 
     @extend_schema(
         summary="Get Public Registration Hierarchy Options",
-        description="Returns faculties, departments, and programs for student registration.",
+        description="Returns schools, faculties, departments, and programs for student registration.",
     )
     def get(self, request):
-        from hierarchy.models import Department, Faculty, Program
+        from hierarchy.models import Department, Faculty, Program, School
 
-        faculties = Faculty.objects.order_by("name").values("id", "name", "code")
+        schools = School.objects.order_by("name").values("id", "name", "code")
+        faculties = Faculty.objects.order_by("name").values("id", "name", "code", "school_id")
         departments = Department.objects.order_by("name").values("id", "name", "code", "faculty_id")
         programs = Program.objects.order_by("name").values(
             "id", "name", "code", "department_id", "max_level", "is_default"
@@ -75,6 +76,7 @@ class RegistrationOptionsView(APIView):
 
         return Response(
             {
+                "schools": list(schools),
                 "faculties": list(faculties),
                 "departments": list(departments),
                 "programs": list(programs),
