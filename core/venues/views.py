@@ -295,7 +295,12 @@ class VenueViewSet(viewsets.ModelViewSet):
             except Exception:
                 pass
 
-        return qs.distinct().order_by("name")
+        return (
+            qs.select_related("owning_department", "owning_faculty", "owning_school")
+            .prefetch_related("facilities")
+            .distinct()
+            .order_by("name")
+        )
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:

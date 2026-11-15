@@ -145,16 +145,10 @@ def build_timetable_scope_q(user, prefix=""):
         if profile.level == "school" and profile.scope_school_id:
             sch_id = profile.scope_school_id
             venue_q = (
-                Q(venue__owning_school_id=sch_id)
-                | Q(venue__owning_faculty__school_id=sch_id)
-                | Q(venue__owning_department__faculty__school_id=sch_id)
+                Q(**{f"{p}venue__owning_school_id": sch_id})
+                | Q(**{f"{p}venue__owning_faculty__school_id": sch_id})
+                | Q(**{f"{p}venue__owning_department__faculty__school_id": sch_id})
             )
-            if p:
-                venue_q |= (
-                    Q(**{f"{p}venue__owning_school_id": sch_id})
-                    | Q(**{f"{p}venue__owning_faculty__school_id": sch_id})
-                    | Q(**{f"{p}venue__owning_department__faculty__school_id": sch_id})
-                )
             return (
                 Q(**{f"{p}course__owning_school_id": sch_id})
                 | Q(**{f"{p}course__owning_faculty__school_id": sch_id})
@@ -180,9 +174,9 @@ def build_timetable_scope_q(user, prefix=""):
         Q(**{f"{p}course__owning_department__in": dept_qs})
         | Q(**{f"{p}course__owning_faculty__in": fac_qs})
         | Q(**{f"{p}course__owning_school__in": sch_qs})
-        | Q(venue__owning_department__in=dept_qs)
-        | Q(venue__owning_faculty__in=fac_qs)
-        | Q(venue__owning_school__in=sch_qs)
+        | Q(**{f"{p}venue__owning_department__in": dept_qs})
+        | Q(**{f"{p}venue__owning_faculty__in": fac_qs})
+        | Q(**{f"{p}venue__owning_school__in": sch_qs})
         | Q(**{f"{p}course__access_grants__granted_to_department__in": dept_qs, f"{p}course__access_grants__status": "approved"})
         | Q(**{f"{p}course__access_grants__target_program__department__in": dept_qs, f"{p}course__access_grants__status": "approved"})
         | Q(**{f"{p}course__access_grants__granted_to_faculty__in": fac_qs, f"{p}course__access_grants__status": "approved"})
@@ -190,12 +184,6 @@ def build_timetable_scope_q(user, prefix=""):
         | Q(**{f"{p}course__owning_level": "general"})
         | Q(**{f"{p}entry_type": "event"})
     )
-    if p:
-        base_q |= (
-            Q(**{f"{p}venue__owning_department__in": dept_qs})
-            | Q(**{f"{p}venue__owning_faculty__in": fac_qs})
-            | Q(**{f"{p}venue__owning_school__in": sch_qs})
-        )
     return base_q
 
 

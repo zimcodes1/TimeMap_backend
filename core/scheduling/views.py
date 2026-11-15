@@ -400,12 +400,67 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
                     qs = qs.exclude(entry_type=TimetableEntry.EntryType.EXAM)
             else:
                 qs = qs.exclude(entry_type=TimetableEntry.EntryType.EXAM)
-        return qs.distinct()
+        return (
+            qs.select_related(
+                "course__owning_department__faculty",
+                "venue",
+                "created_by",
+                "semester__session",
+                "target_program",
+            )
+            .prefetch_related("course__lecturers__user")
+            .distinct()
+        )
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
             return [IsAuthenticated(), IsPasswordResetDone(), IsAdminUserRole()]
         return super().get_permissions()
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        entries = list(queryset)
+
+        # Precompute in-memory conflict map for lightning fast serialization without N+1 queries
+        venue_map = {}
+        lec_map = {}
+        for e in entries:
+            if e.venue_id and e.recurrence_rule:
+                key = (e.semester_id, e.recurrence_rule, e.venue_id)
+                venue_map.setdefault(key, []).append(e)
+            if e.course_id and e.recurrence_rule and hasattr(e, "course") and e.course:
+                for lec in getattr(e.course, "lecturers").all():
+                    l_key = (e.semester_id, e.recurrence_rule, lec.id)
+                    lec_map.setdefault(l_key, []).append(e)
+
+        for e in entries:
+            info = {"has_conflict": False, "reason": ""}
+            # 1. Venue clash
+            if e.venue_id and e.recurrence_rule:
+                key = (e.semester_id, e.recurrence_rule, e.venue_id)
+                for other in venue_map.get(key, []):
+                    if other.id != e.id and e.start_time < other.end_time and e.end_time > other.start_time:
+                        code = other.course.code if other.course else "Entry"
+                        v_name = e.venue.name if e.venue else "Venue"
+                        info = {"has_conflict": True, "reason": f"Venue collision with {code} at {v_name}"}
+                        break
+
+            # 2. Lecturer clash
+            if not info["has_conflict"] and e.course_id and e.recurrence_rule and hasattr(e, "course") and e.course:
+                for lec in getattr(e.course, "lecturers").all():
+                    l_key = (e.semester_id, e.recurrence_rule, lec.id)
+                    for other in lec_map.get(l_key, []):
+                        if other.id != e.id and e.start_time < other.end_time and e.end_time > other.start_time:
+                            code = other.course.code if other.course else "Entry"
+                            info = {"has_conflict": True, "reason": f"Lecturer collision: {lec.full_name} is double-booked with {code}"}
+                            break
+                    if info["has_conflict"]:
+                        break
+
+            e._cached_conflict_info = info
+
+        serializer = self.get_serializer(entries, many=True)
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user.admin_profile)
@@ -524,7 +579,16 @@ class LectureSessionViewSet(viewsets.ModelViewSet):
                     qs = qs.exclude(timetable_entry__entry_type=TimetableEntry.EntryType.EXAM)
             else:
                 qs = qs.exclude(timetable_entry__entry_type=TimetableEntry.EntryType.EXAM)
-        return qs.order_by("session_date", "session_start_time")
+        return (
+            qs.select_related(
+                "timetable_entry__course__owning_department__faculty",
+                "timetable_entry__semester__session",
+                "timetable_entry__venue",
+                "venue",
+            )
+            .prefetch_related("timetable_entry__course__lecturers__user")
+            .order_by("session_date", "session_start_time")
+        )
 
     def get_permissions(self):
         if self.action in ["update", "partial_update", "destroy", "cancel"]:
@@ -839,7 +903,12 @@ class ExamSittingViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         base_scope_q = build_timetable_scope_q(user, prefix="timetable_entry__")
-        return ExamSitting.objects.filter(base_scope_q).distinct()
+        return (
+            ExamSitting.objects.filter(base_scope_q)
+            .select_related("timetable_entry__course", "timetable_entry__venue")
+            .prefetch_related("invigilators")
+            .distinct()
+        )
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:

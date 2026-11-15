@@ -21,14 +21,26 @@ from .serializers import (
     CourseRegistrationSerializer,
     CourseSerializer,
 )
+from rest_framework.pagination import LimitOffsetPagination
 from .services import (
     annotate_courses_with_student_counts,
     get_visible_courses_for_student,
 )
 
 
+class CourseLimitOffsetPagination(LimitOffsetPagination):
+    default_limit = 20
+    max_limit = 200
+
+    def paginate_queryset(self, queryset, request, view=None):
+        if "limit" in request.query_params or "offset" in request.query_params:
+            return super().paginate_queryset(queryset, request, view=view)
+        return None
+
+
 class CourseViewSet(viewsets.ModelViewSet):
     serializer_class = CourseSerializer
+    pagination_class = CourseLimitOffsetPagination
     permission_classes = [IsAuthenticated, IsPasswordResetDone, CanManageCourse]
 
     def get_queryset(self):
@@ -144,6 +156,40 @@ class CourseViewSet(viewsets.ModelViewSet):
                     | Q(lecturers__user__identifier=str(lecturer_param))
                 ).distinct()
 
+        faculty_param = self.request.query_params.get("faculty")
+        if faculty_param:
+            if str(faculty_param).isdigit():
+                base_qs = base_qs.filter(
+                    Q(owning_faculty_id=int(faculty_param))
+                    | Q(owning_department__faculty_id=int(faculty_param))
+                )
+            else:
+                base_qs = base_qs.filter(
+                    Q(owning_faculty__name__iexact=str(faculty_param).strip())
+                    | Q(owning_department__faculty__name__iexact=str(faculty_param).strip())
+                )
+
+        department_param = self.request.query_params.get("department")
+        if department_param:
+            if str(department_param).isdigit():
+                base_qs = base_qs.filter(owning_department_id=int(department_param))
+            else:
+                base_qs = base_qs.filter(owning_department__name__iexact=str(department_param).strip())
+
+        level_param = self.request.query_params.get("level")
+        if level_param and str(level_param).isdigit():
+            base_qs = base_qs.filter(level=int(level_param))
+
+        search_param = self.request.query_params.get("search") or self.request.query_params.get("q")
+        if search_param:
+            term = str(search_param).strip()
+            base_qs = base_qs.filter(
+                Q(code__icontains=term)
+                | Q(title__icontains=term)
+                | Q(owning_department__name__icontains=term)
+                | Q(owning_faculty__name__icontains=term)
+            )
+
         return base_qs.select_related(
             "owning_department__faculty__school",
             "owning_faculty__school",
@@ -158,7 +204,7 @@ class CourseViewSet(viewsets.ModelViewSet):
             "access_grants__granted_to_department",
             "access_grants__granted_to_faculty",
             "access_grants__granted_to_school",
-        )
+        ).order_by("code")
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()

@@ -364,38 +364,43 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             return obj.recurrence_start_date.strftime("%A")
         return "Monday"
 
-    def get_lecturer_name(self, obj) -> str:
-        if not obj.course:
-            return ""
-        first_lec = obj.course.lecturers.first()
-        return first_lec.full_name if first_lec else ""
-
     def get_lecturers(self, obj) -> list:
         if not obj.course:
             return []
         return [l.full_name for l in obj.course.lecturers.all()]
 
+    def get_lecturer_name(self, obj) -> str:
+        lecs = self.get_lecturers(obj)
+        return lecs[0] if lecs else ""
+
     def get_expected_students(self, obj) -> int:
         if not obj.course:
             return 50
         try:
-            from student_counts.models import ProgramStudentCount
+            counts_map = self.context.get("student_counts_map") if hasattr(self, "context") else None
+            dept_counts_map = self.context.get("dept_student_counts_map") if hasattr(self, "context") else None
+            if counts_map is None:
+                from student_counts.models import ProgramStudentCount
+                counts_map = {
+                    (sc["program_id"], sc["level"]): sc["count"]
+                    for sc in ProgramStudentCount.objects.values("program_id", "level", "count")
+                }
+                dept_counts_map = {}
+                for sc in ProgramStudentCount.objects.values("program__department_id", "level", "count"):
+                    key = (sc["program__department_id"], sc["level"])
+                    dept_counts_map[key] = dept_counts_map.get(key, 0) + sc["count"]
+                if hasattr(self, "context"):
+                    self.context["student_counts_map"] = counts_map
+                    self.context["dept_student_counts_map"] = dept_counts_map
+
             if obj.course.target_program_id:
-                sc = ProgramStudentCount.objects.filter(
-                    program_id=obj.course.target_program_id,
-                    level=obj.course.level,
-                ).first()
-                if sc:
-                    return sc.count
+                count = counts_map.get((obj.course.target_program_id, obj.course.level))
+                if count is not None:
+                    return count
             elif obj.course.owning_department_id:
-                counts = list(
-                    ProgramStudentCount.objects.filter(
-                        program__department_id=obj.course.owning_department_id,
-                        level=obj.course.level,
-                    ).values_list("count", flat=True)
-                )
-                if counts:
-                    return sum(counts)
+                count = dept_counts_map.get((obj.course.owning_department_id, obj.course.level))
+                if count is not None and count > 0:
+                    return count
         except Exception:
             pass
         return 50
@@ -774,13 +779,6 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             return obj.session_date.strftime("%A")
         return "Monday"
 
-    def get_lecturer_name(self, obj) -> str:
-        course = getattr(obj.timetable_entry, "course", None)
-        if not course:
-            return ""
-        first_lec = course.lecturers.first()
-        return first_lec.full_name if first_lec else ""
-
     def get_lecturers(self, obj) -> list:
         course = getattr(obj.timetable_entry, "course", None)
         if not course:
@@ -795,6 +793,10 @@ class LectureSessionSerializer(serializers.ModelSerializer):
             }
             for l in course.lecturers.all()
         ]
+
+    def get_lecturer_name(self, obj) -> str:
+        lecs = self.get_lecturers(obj)
+        return lecs[0]["name"] if lecs else ""
 
     def get_can_shift(self, obj) -> bool:
         # Past sessions can NEVER be shifted
