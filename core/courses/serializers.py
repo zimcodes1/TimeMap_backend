@@ -60,6 +60,8 @@ class CourseSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "is_granted_to_scope", "can_edit_exam_settings", "applicable_program_ids")
 
     def get_applicable_program_ids(self, obj):
+        if hasattr(obj, "_cached_attributed_programs"):
+            return list(obj._cached_attributed_programs)
         try:
             from .services import get_course_attributed_programs
             return list(get_course_attributed_programs(obj))

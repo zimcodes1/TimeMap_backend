@@ -116,7 +116,10 @@ def get_course_attributed_programs(course, hierarchy_ctx=None):
 
     # 1. Originating department / program scope
     if course.program_scope == Course.ProgramScope.PROGRAM:
-        m2m_ids = list(course.target_programs.values_list("id", flat=True))
+        if hasattr(course, "_prefetched_objects_cache") and "target_programs" in course._prefetched_objects_cache:
+            m2m_ids = [p.id for p in course.target_programs.all()]
+        else:
+            m2m_ids = list(course.target_programs.values_list("id", flat=True))
         if m2m_ids:
             attributed_programs.update(m2m_ids)
         elif course.target_program_id:
@@ -238,5 +241,7 @@ def annotate_courses_with_student_counts(courses):
     }
 
     for c in courses_list:
+        attributed = get_course_attributed_programs(c, hierarchy_ctx=hierarchy_ctx)
+        c._cached_attributed_programs = attributed
         c._cached_registration_count = calculate_course_student_count(c, hierarchy_ctx=hierarchy_ctx)
 

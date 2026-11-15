@@ -145,20 +145,26 @@ class CourseViewSet(viewsets.ModelViewSet):
                 ).distinct()
 
         return base_qs.select_related(
-            "owning_department",
-            "owning_faculty",
+            "owning_department__faculty__school",
+            "owning_faculty__school",
             "owning_school",
             "target_program",
-            "semester",
             "semester__session",
         ).prefetch_related(
-            "lecturers",
+            "target_programs",
+            "lecturers__department",
             "access_grants",
             "access_grants__target_program",
             "access_grants__granted_to_department",
             "access_grants__granted_to_faculty",
             "access_grants__granted_to_school",
         )
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        annotate_courses_with_student_counts([instance])
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
