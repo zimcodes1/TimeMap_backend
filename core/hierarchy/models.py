@@ -7,8 +7,8 @@ def validate_code_format(value):
     if not value or not isinstance(value, str):
         raise ValidationError("Code must be a non-empty string.")
     cleaned = value.strip().upper()
-    if not re.match(r"^[A-Z0-9]+$", cleaned):
-        raise ValidationError("Code must be alphanumeric without spaces or special characters.")
+    if not re.match(r"^[A-Z0-9_-]+$", cleaned):
+        raise ValidationError("Code must be alphanumeric without spaces or special characters (letters, numbers, hyphens, and underscores only).")
 
 
 class School(models.Model):
@@ -20,6 +20,8 @@ class School(models.Model):
         super().clean()
         if self.code:
             self.code = self.code.strip().upper()
+        if self.name:
+            self.name = self.name.strip()
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -39,6 +41,8 @@ class Faculty(models.Model):
         super().clean()
         if self.code:
             self.code = self.code.strip().upper()
+        if self.name:
+            self.name = self.name.strip()
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -59,6 +63,8 @@ class Department(models.Model):
         super().clean()
         if self.code:
             self.code = self.code.strip().upper()
+        if self.name:
+            self.name = self.name.strip()
         if self.max_level and self.max_level < 100:
             raise ValidationError("Max level must be at least 100.")
 
@@ -105,6 +111,8 @@ class Program(models.Model):
         super().clean()
         if self.code:
             self.code = self.code.strip().upper()
+        if self.name:
+            self.name = self.name.strip()
         if self.max_level and self.max_level < 100:
             raise ValidationError("Max level must be at least 100.")
 

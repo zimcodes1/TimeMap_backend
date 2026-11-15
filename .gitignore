@@ -16,3 +16,9 @@ fnas_allowed_venues_by_course.csv
 fnas_allowed_venues_by_course.json
 core/serviceAccountKey.json
 core/.env
+scripts/credentials.txt
+core/datadump.json
+.gitignore
+.gitignore
+scripts/get_credentials.py
+scripts/get_credentials.py.save

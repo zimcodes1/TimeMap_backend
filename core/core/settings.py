@@ -27,9 +27,16 @@ load_dotenv()
 SECRET_KEY = "django-insecure-p1o8onc+#$04d3a14rh=xd9423y0z@h1#+!!ngk*rp3xjwa9km"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = os.getenv("DEBUG", "True").lower() in ("true", "1")
 
-ALLOWED_HOSTS = ["*"]
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+
+# ALLOWED_HOSTS validates the Host header of requests hitting this backend server
+allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
+if allowed_hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in allowed_hosts_env.split(",") if h.strip()]
+else:
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "*"]
 
 
 # Application definition
@@ -74,6 +81,7 @@ MIDDLEWARE = [
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True
+CSRF_TRUSTED_ORIGINS = [FRONTEND_URL]
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -131,7 +139,7 @@ if "test" in sys.argv or any("pytest" in arg for arg in sys.argv) or os.getenv("
             "NAME": BASE_DIR / "test_db.sqlite3",
         }
     }
-elif database_url.startswith("sqlite"):
+elif database_url.__contains__("sqlite"):
     parsed_database_url = urlparse(database_url)
     database_name = parsed_database_url.path.lstrip("/") if parsed_database_url.path else "db.sqlite3"
     DATABASES = {

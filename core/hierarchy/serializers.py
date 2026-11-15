@@ -9,7 +9,10 @@ class SchoolSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "created_at")
 
     def validate_code(self, value):
-        return value.strip().upper()
+        return value.strip().upper() if isinstance(value, str) else value
+
+    def validate_name(self, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class FacultySerializer(serializers.ModelSerializer):
@@ -21,7 +24,10 @@ class FacultySerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "created_at")
 
     def validate_code(self, value):
-        return value.strip().upper()
+        return value.strip().upper() if isinstance(value, str) else value
+
+    def validate_name(self, value):
+        return value.strip() if isinstance(value, str) else value
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -73,7 +79,10 @@ class ProgramSerializer(serializers.ModelSerializer):
         )
 
     def validate_code(self, value):
-        return value.strip().upper()
+        return value.strip().upper() if isinstance(value, str) else value
+
+    def validate_name(self, value):
+        return value.strip() if isinstance(value, str) else value
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -99,7 +108,10 @@ class DepartmentSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "created_at")
 
     def validate_code(self, value):
-        return value.strip().upper()
+        return value.strip().upper() if isinstance(value, str) else value
+
+    def validate_name(self, value):
+        return value.strip() if isinstance(value, str) else value
 
     def validate(self, attrs):
         request = self.context.get("request")
