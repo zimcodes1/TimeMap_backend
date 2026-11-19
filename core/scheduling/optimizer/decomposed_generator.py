@@ -150,13 +150,16 @@ def generate_school_timetable_decomposed(
     from courses.models import CourseAccessGrant
 
     grant_fac_counts: Dict[int, Set[int]] = defaultdict(set)
+    course_owning_fac_map: Dict[int, Optional[int]] = {}
     for g in CourseAccessGrant.objects.filter(
         status="approved",
         course__semester=semester,
     ).select_related("course"):
         cid = g.course_id
-        if g.course.owning_faculty_id:
-            grant_fac_counts[cid].add(g.course.owning_faculty_id)
+        if g.course:
+            course_owning_fac_map[cid] = g.course.owning_faculty_id
+            if g.course.owning_faculty_id:
+                grant_fac_counts[cid].add(g.course.owning_faculty_id)
         if g.granted_to_faculty_id:
             grant_fac_counts[cid].add(g.granted_to_faculty_id)
         if g.granted_to_department_id and getattr(g.granted_to_department, "faculty_id", None):
@@ -166,7 +169,7 @@ def generate_school_timetable_decomposed(
     largest_fac_id = faculties[0].id if faculties else None
     multi_faculty_anchor_ids = {
         cid for cid, facs in grant_fac_counts.items()
-        if len(facs) >= 3 or (len(facs) >= 2 and Course.objects.filter(id=cid).exclude(owning_faculty_id=largest_fac_id).exists())
+        if len(facs) >= 3 or (len(facs) >= 2 and course_owning_fac_map.get(cid) != largest_fac_id)
     }
 
     core_courses_qs = Course.objects.filter(
@@ -195,6 +198,7 @@ def generate_school_timetable_decomposed(
                 semester_id=semester.id,
                 scope_type="school",
                 scope_id=school_id,
+                include_external_commitments=False,
             )
             core_course_ids = set(core_courses_qs.values_list("id", flat=True))
             core_occurrences = [
@@ -283,6 +287,7 @@ def generate_school_timetable_decomposed(
             semester_id=semester.id,
             scope_type="faculty",
             scope_id=fac.id,
+            include_external_commitments=False,
         )
 
         # Filter out core courses already scheduled in Step 0
@@ -377,6 +382,7 @@ def generate_school_timetable_decomposed(
         semester_id=semester.id,
         scope_type="school",
         scope_id=school_id,
+        include_external_commitments=False,
     )
     # Clear out blocked slots for evaluation so we evaluate true internal clashes
     school_full_problem.blocked_venue_slots = {}

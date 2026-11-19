@@ -1,5 +1,6 @@
 from datetime import date
 import json
+import os
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -1611,6 +1612,27 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
         user = request.user
         publish_immediately = data.get("publish_immediately", False)
 
+        def _touch_gunicorn_heartbeat():
+            """
+            On Linux, Gunicorn master monitors worker health by checking the mtime of the
+            worker's temporary heartbeat file (prefix 'wgunicorn-').
+            Touching open wgunicorn file descriptors prevents Gunicorn arbiter timeouts
+            during long-running generator execution even on sync workers.
+            """
+            try:
+                now = time.monotonic()
+                fd_dir = "/proc/self/fd"
+                if os.path.exists(fd_dir):
+                    for entry in os.listdir(fd_dir):
+                        try:
+                            target = os.readlink(os.path.join(fd_dir, entry))
+                            if "wgunicorn" in target:
+                                os.utime(int(entry), (now, now))
+                        except (OSError, ValueError):
+                            pass
+            except Exception:
+                pass
+
         def event_stream():
             queue: list = []
 
@@ -1646,32 +1668,35 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
                 t = threading.Thread(target=target)
                 t.start()
 
+                last_keepalive = time.time()
+                completed_emitted = False
+
                 while t.is_alive() or queue:
                     if queue:
                         while queue:
                             evt = queue.pop(0)
+                            if evt.get("stage") == "complete":
+                                completed_emitted = True
                             yield f"data: {json.dumps(evt)}\n\n"
+                        last_keepalive = time.time()
+                        _touch_gunicorn_heartbeat()
                     else:
+                        now_ts = time.time()
+                        if now_ts - last_keepalive >= 2.0:
+                            _touch_gunicorn_heartbeat()
+                            yield ": ping\n\n"
+                            last_keepalive = now_ts
                         time.sleep(0.08)
 
                 t.join()
                 if error_holder:
                     yield f"data: {json.dumps({'stage': 'error', 'message': error_holder['error']})}\n\n"
+                elif not completed_emitted and "run" in run_holder:
+                    r = run_holder["run"]
+                    yield f"data: {json.dumps({'stage': 'complete', 'percent': 100, 'message': 'School-wide timetable generated successfully!', 'runId': str(r.id), 'run': TimetableGenerationRunDetailSerializer(r).data})}\n\n"
             else:
                 try:
-                    problem = build_scheduling_problem_from_db(
-                        semester_id=semester_id,
-                        scope_type=scope_type,
-                        scope_id=scope_id,
-                    )
-                    total_occ = len(problem.occurrences)
-                    yield f"data: {json.dumps({'stage': 'init', 'percent': 10, 'message': f'Preparing {scope_type.capitalize()} schedule ({total_occ} occurrences)...'})}\n\n"
-
-                    cfg = infer_optimizer_config_for_scope(
-                        scope_type=scope_type,
-                        total_occurrences=total_occ,
-                        data=data,
-                    )
+                    yield f"data: {json.dumps({'stage': 'init', 'percent': 5, 'message': f'Preparing {scope_type.capitalize()} schedule...'})}\n\n"
 
                     def ga_cb(gen, max_gen, best_eval):
                         pct = min(95, 10 + int((gen / max_gen) * 85))
@@ -1689,6 +1714,22 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
 
                     def target_single():
                         try:
+                            problem = build_scheduling_problem_from_db(
+                                semester_id=semester_id,
+                                scope_type=scope_type,
+                                scope_id=scope_id,
+                            )
+                            total_occ = len(problem.occurrences)
+                            queue.append({
+                                "stage": "init",
+                                "percent": 10,
+                                "message": f"Loaded {scope_type.capitalize()} model ({total_occ} occurrences). Running optimizer...",
+                            })
+                            cfg = infer_optimizer_config_for_scope(
+                                scope_type=scope_type,
+                                total_occurrences=total_occ,
+                                data=data,
+                            )
                             result = generate_timetable(problem, config=cfg, progress_callback=ga_cb)
                             now = datetime.datetime.now(datetime.timezone.utc)
                             run = TimetableGenerationRun.objects.create(
@@ -1729,12 +1770,20 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
                     t2 = threading.Thread(target=target_single)
                     t2.start()
 
+                    last_keepalive = time.time()
                     while t2.is_alive() or queue:
                         if queue:
                             while queue:
                                 evt = queue.pop(0)
                                 yield f"data: {json.dumps(evt)}\n\n"
+                            last_keepalive = time.time()
+                            _touch_gunicorn_heartbeat()
                         else:
+                            now_ts = time.time()
+                            if now_ts - last_keepalive >= 2.0:
+                                _touch_gunicorn_heartbeat()
+                                yield ": ping\n\n"
+                                last_keepalive = now_ts
                             time.sleep(0.08)
 
                     t2.join()
@@ -1747,8 +1796,9 @@ class TimetableGenerationViewSet(viewsets.ViewSet):
                     yield f"data: {json.dumps({'stage': 'error', 'message': str(e)})}\n\n"
 
         response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
-        response["Cache-Control"] = "no-cache"
+        response["Cache-Control"] = "no-cache, no-transform"
         response["X-Accel-Buffering"] = "no"
+        response["Connection"] = "keep-alive"
         return response
 
     @extend_schema(summary="List past timetable generation runs", responses={200: TimetableGenerationRunSerializer(many=True)})

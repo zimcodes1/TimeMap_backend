@@ -64,21 +64,31 @@ def build_external_commitments_from_db(
         return blocked_venues, blocked_lecturers, blocked_cohorts, details
 
     # Determine external published generation runs
-    runs_qs = TimetableGenerationRun.objects.filter(
+    # If active TimetableEntry rows already exist for this semester, they are the authoritative,
+    # materialized source of truth. Skipping runs_qs prevents downloading multi-megabyte
+    # assignments_payload blobs across the network.
+    has_active_entries = TimetableEntry.objects.filter(
         semester_id=semester_id,
-        is_published=True,
-    )
+        entry_type=TimetableEntry.EntryType.LECTURE,
+    ).exists()
 
-    if scope_type == "department":
-        # Any published run that is NOT this department's own run
-        runs_qs = runs_qs.exclude(scope_type="department", scope_id=int(scope_id))
-    elif scope_type == "faculty":
-        # Exclude this faculty's own run AND child department runs under this faculty
-        dept_ids = list(Department.objects.filter(faculty_id=scope_id).values_list("id", flat=True))
-        runs_qs = runs_qs.exclude(
-            Q(scope_type="faculty", scope_id=int(scope_id))
-            | Q(scope_type="department", scope_id__in=dept_ids)
+    runs_qs = []
+    if not has_active_entries:
+        runs_qs = TimetableGenerationRun.objects.filter(
+            semester_id=semester_id,
+            is_published=True,
         )
+
+        if scope_type == "department":
+            # Any published run that is NOT this department's own run
+            runs_qs = runs_qs.exclude(scope_type="department", scope_id=int(scope_id))
+        elif scope_type == "faculty":
+            # Exclude this faculty's own run AND child department runs under this faculty
+            dept_ids = list(Department.objects.filter(faculty_id=scope_id).values_list("id", flat=True))
+            runs_qs = runs_qs.exclude(
+                Q(scope_type="faculty", scope_id=int(scope_id))
+                | Q(scope_type="department", scope_id__in=dept_ids)
+            )
 
     # 1. Ingest assignments_payload from external published generation runs
     for run in runs_qs:
@@ -192,6 +202,7 @@ def build_scheduling_problem_from_db(
     semester_id: int | str,
     scope_type: str,
     scope_id: int | str,
+    include_external_commitments: bool = True,
 ) -> SchedulingProblem:
     """
     Database adapter: queries Django models for the specified scope and active semester,
@@ -257,11 +268,21 @@ def build_scheduling_problem_from_db(
         Course.objects.filter(course_filter)
         .filter(Q(semester=semester) | Q(semester__isnull=True))
         .select_related("owning_department", "owning_faculty", "owning_school", "target_program")
-        .prefetch_related("lecturers", "access_grants")
+        .prefetch_related("lecturers", "access_grants__target_program")
         .distinct()
     )
 
-    # 3. Query all programs in scope for student group resolution
+    # 3. Query all programs and departments in scope for student group resolution (batch loaded to avoid N+1 queries)
+    from hierarchy.models import Department
+    dept_qs = Department.objects.select_related("faculty").all()
+    faculty_depts_map: Dict[int, List[int]] = {}
+    school_depts_map: Dict[int, List[int]] = {}
+    for d in dept_qs:
+        if d.faculty_id:
+            faculty_depts_map.setdefault(d.faculty_id, []).append(d.id)
+            if d.faculty and d.faculty.school_id:
+                school_depts_map.setdefault(d.faculty.school_id, []).append(d.id)
+
     programs_map: Dict[int, Program] = {
         p.id: p for p in Program.objects.select_related("department").all()
     }
@@ -293,21 +314,19 @@ def build_scheduling_problem_from_db(
             if c.owning_department_id:
                 dept_ids = [c.owning_department_id]
             elif c.owning_faculty_id:
-                dept_ids = list(
-                    Department.objects.filter(faculty_id=c.owning_faculty_id).values_list("id", flat=True)
-                )
+                dept_ids = faculty_depts_map.get(c.owning_faculty_id, [])
             elif c.owning_school_id:
-                dept_ids = list(
-                    Department.objects.filter(faculty__school_id=c.owning_school_id).values_list("id", flat=True)
-                )
+                dept_ids = school_depts_map.get(c.owning_school_id, [])
 
             for dept_id in dept_ids:
                 for prog in depts_programs.get(dept_id, []):
                     groups.add(StudentGroup(prog.id, c.level, prog.code, prog.name))
 
-        # Check approved access grants
+        # Check approved access grants (using prefetched cache, no N+1 query)
         receiving_dept_ids: Set[int | str] = set()
-        for grant in c.access_grants.filter(status="approved"):
+        for grant in c.access_grants.all():
+            if grant.status != "approved":
+                continue
             if grant.target_program:
                 gp = grant.target_program
                 groups.add(StudentGroup(gp.id, c.level, gp.code, gp.name))
@@ -510,13 +529,16 @@ def build_scheduling_problem_from_db(
     conflict_graph, shared_groups = build_student_conflict_graph(courses_data)
 
     # 11. Build blocked venue, lecturer, and cohort commitments from published timetables
-    blocked_venues, blocked_lecturers, blocked_cohorts, external_details = (
-        build_external_commitments_from_db(
-            semester_id=semester_id,
-            scope_type=scope_type,
-            scope_id=scope_id,
+    if include_external_commitments and scope_type != "school":
+        blocked_venues, blocked_lecturers, blocked_cohorts, external_details = (
+            build_external_commitments_from_db(
+                semester_id=semester_id,
+                scope_type=scope_type,
+                scope_id=scope_id,
+            )
         )
-    )
+    else:
+        blocked_venues, blocked_lecturers, blocked_cohorts, external_details = ({}, {}, {}, [])
 
     return SchedulingProblem(
         occurrences=occurrences,
